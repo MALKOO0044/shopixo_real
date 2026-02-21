@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { ensureAdmin } from '@/lib/auth/admin-guard';
 import { loggerForRequest } from '@/lib/log';
 import { getJob, cancelJob } from '@/lib/jobs';
+import { cancelAIMediaRun } from '@/lib/ai/media/service';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -56,8 +57,26 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
     let body: any = {}; try { body = await req.json(); } catch {}
     const action = String(body?.action || '').toLowerCase();
     if (action === 'cancel') {
-      const ok = await cancelJob(id);
-      const r = NextResponse.json({ ok });
+      const jobState = await getJob(id);
+      if (!jobState?.job) {
+        const r = NextResponse.json({ ok: false, error: 'Not found' }, { status: 404 });
+        r.headers.set('x-request-id', log.requestId);
+        return r;
+      }
+
+      let ok = false;
+      if (jobState.job.kind === 'media') {
+        const runId = Number((jobState.job as any)?.params?.runId);
+        if (Number.isFinite(runId) && runId > 0) {
+          ok = await cancelAIMediaRun(runId);
+        } else {
+          ok = await cancelJob(id);
+        }
+      } else {
+        ok = await cancelJob(id);
+      }
+
+      const r = NextResponse.json({ ok }, { status: ok ? 200 : 409 });
       r.headers.set('x-request-id', log.requestId);
       return r;
     }

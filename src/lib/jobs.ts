@@ -1,7 +1,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { hasTable } from '@/lib/db-features';
 
-export type JobKind = 'finder' | 'import' | 'sync' | 'scanner';
+export type JobKind = 'finder' | 'import' | 'sync' | 'scanner' | 'media';
 export type JobStatus = 'pending' | 'running' | 'success' | 'error' | 'canceled';
 export type JobItemStatus = 'pending' | 'running' | 'success' | 'error' | 'skipped' | 'canceled';
 
@@ -102,12 +102,14 @@ export async function updateJobItem(id: number, patch: Partial<{ status: JobItem
 export async function cancelJob(id: number): Promise<boolean> {
   const db = getAdmin();
   if (!db) return false;
-  const { error } = await db
+  const { data, error } = await db
     .from('admin_jobs')
     .update({ status: 'canceled', finished_at: new Date().toISOString() })
     .eq('id', id)
-    .neq('status', 'success');
-  return !error;
+    .in('status', ['pending', 'running'])
+    .select('id')
+    .maybeSingle();
+  return !error && Boolean((data as any)?.id);
 }
 
 export async function getJob(id: number): Promise<any | null> {

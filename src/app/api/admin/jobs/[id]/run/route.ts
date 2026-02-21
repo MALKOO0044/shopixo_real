@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { ensureAdmin } from '@/lib/auth/admin-guard'
 import { loggerForRequest } from '@/lib/log'
 import { getJob, startJob, finishJob } from '@/lib/jobs'
-import { stepFinderJob } from '@/lib/runner'
+import { runJob, stepFinderJob } from '@/lib/runner'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -25,6 +25,19 @@ export async function POST(req: Request, ctx: { params: { id: string } }) {
     }
     const st = await getJob(id)
     if (!st) return NextResponse.json({ ok: false, error: 'Not found' }, { status: 404 })
+
+    if (st.job.kind !== 'finder') {
+      const result = await runJob(id)
+      const r = NextResponse.json({
+        ok: result.ok,
+        done: true,
+        kind: st.job.kind,
+        processed: result.processed || 0,
+        error: result.error || null,
+      }, { status: result.ok ? 200 : 500 })
+      r.headers.set('x-request-id', log.requestId)
+      return r
+    }
 
     let body: any = {}
     try { body = await req.json() } catch {}

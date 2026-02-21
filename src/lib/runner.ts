@@ -3,6 +3,7 @@ import { listCjProductsPage, mapCjItemToProductLike, queryProductByPidOrKeyword 
 import { calculateRetailSar, usdToSar } from '@/lib/pricing'
 import { getJob, patchJob, startJob, finishJob, upsertJobItemByPid } from '@/lib/jobs'
 import { runScannerJob } from '@/lib/scanner'
+import { runMediaJob } from '@/lib/ai/media/service'
 
 function getAdmin(): SupabaseClient | null {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -37,6 +38,33 @@ export async function runJob(id: number): Promise<{ ok: boolean; processed?: num
       const res = await runScannerJob(id)
       await finishJob(id, 'success', res)
       return { ok: true, processed: res.updated || 0, kind: job.kind }
+    }
+    if (job.kind === 'media') {
+      const res = await runMediaJob(id)
+      const status = res.status === 'failed'
+        ? 'error'
+        : res.status === 'canceled'
+          ? 'canceled'
+          : 'success'
+
+      await finishJob(
+        id,
+        status,
+        {
+          processed: res.processed,
+          approved: res.approved,
+          rejected: res.rejected,
+          mediaStatus: res.status,
+        },
+        status === 'error' ? 'AI media run failed' : undefined
+      )
+
+      return {
+        ok: status !== 'error',
+        processed: res.processed,
+        kind: job.kind,
+        error: status === 'error' ? 'media run failed' : undefined,
+      }
     }
     // Other kinds not implemented yet
     await finishJob(id, 'error', null, 'Runner does not support this job kind yet')

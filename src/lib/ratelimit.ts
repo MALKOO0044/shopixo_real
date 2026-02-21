@@ -71,3 +71,6 @@ export const chatLimiter = makeLimiter("rl:chat", 15, "60 s");
 
 // Shipping calc: 60 req / min per IP
 export const shippingLimiter = makeLimiter("rl:shipping", 60, "60 s");
+
+// Admin AI media operations: 20 req / min per IP
+export const aiMediaLimiter = makeLimiter("rl:ai_media", 20, "60 s");
