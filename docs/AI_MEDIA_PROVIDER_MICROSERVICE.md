@@ -1,0 +1,112 @@
+# AI Media Provider Microservice Contract (Option B)
+
+This document defines the contract expected by Shopixo when `AI_MEDIA_PROVIDER_URL` points to your separate AI media microservice.
+
+## 1) Security
+
+Your provider endpoint must require bearer auth.
+
+- Request header from Shopixo:
+  - `Authorization: Bearer <AI_MEDIA_PROVIDER_TOKEN>`
+- Recommended provider-side env:
+  - `AI_MEDIA_INTERNAL_PROVIDER_TOKEN`
+
+Reject missing or invalid tokens with `401`.
+
+## 2) Endpoint
+
+- Method: `POST`
+- Path: `/generate` (recommended)
+- Content-Type: `application/json`
+
+Set `AI_MEDIA_PROVIDER_URL` to the full endpoint URL, for example:
+
+```text
+https://ai-media.your-company.com/generate
+```
+
+## 3) Request payload (sent by Shopixo)
+
+```json
+{
+  "mediaType": "image",
+  "cjProductId": "123456",
+  "color": "Navy Blue",
+  "mediaIndex": 1,
+  "anchorImageUrl": "https://.../anchor.jpg",
+  "sourceVideoUrl": "https://.../source.mp4",
+  "prompt": "...strict fidelity prompt...",
+  "negativePrompt": "...",
+  "width": 2048,
+  "height": 2048,
+  "strictFidelity": true
+}
+```
+
+Notes:
+- `mediaType` is `image` or `video`.
+- `sourceVideoUrl` can be `null`.
+- `prompt` already includes strict product fidelity rules.
+
+## 4) Success response contract
+
+Return `200` with at least one of `url` or `outputUrl`:
+
+```json
+{
+  "outputUrl": "https://cdn.your-company.com/generated/asset-001.jpg",
+  "provider": "internal_microservice",
+  "assetId": "gen_abc123",
+  "meta": {
+    "traceId": "trace-123",
+    "latencyMs": 8420
+  }
+}
+```
+
+Shopixo reads:
+- `url` or `outputUrl` (required)
+- `provider` (optional)
+- `assetId` (optional)
+- `meta` (optional)
+
+## 5) Error response contract
+
+For provider failures, return non-2xx with JSON:
+
+```json
+{
+  "error": "human readable message",
+  "code": "optional_machine_code"
+}
+```
+
+Examples:
+- `400` invalid input
+- `401` invalid token
+- `429` rate limited
+- `503` temporary model backend unavailable
+
+## 6) Operational defaults for launch
+
+Recommended for your scale:
+- `AI_MEDIA_QUALITY_PROFILE=balanced`
+- balanced defaults in Shopixo:
+  - 4 images per color
+  - include video by default
+  - 2k resolution default
+
+## 7) Reliability knobs already supported by Shopixo
+
+- `AI_MEDIA_PROVIDER_TIMEOUT_MS` (defaults to 120000)
+- `AI_MEDIA_PROVIDER_RETRIES` (defaults to 1)
+
+## 8) Validation that remains in Shopixo
+
+Even if provider succeeds, Shopixo still performs:
+- media-type mismatch rejection
+- source-copy rejection
+- duplicate output URL rejection
+- strict fidelity scoring and rejection flow
+
+So your microservice should prioritize correctness, but the store pipeline still enforces final quality gates.

@@ -6,12 +6,36 @@ import type {
 } from './types';
 
 export const MIN_IMAGES_PER_COLOR = 1;
-export const DEFAULT_IMAGES_PER_COLOR = 6;
+export const DEFAULT_IMAGES_PER_COLOR = 4;
 export const MAX_IMAGES_PER_COLOR = 8;
+
+export type AIMediaQualityProfile = 'fast' | 'balanced' | 'premium';
+export const DEFAULT_AI_MEDIA_QUALITY_PROFILE: AIMediaQualityProfile = 'balanced';
 
 const RESOLUTION_PRESETS: Record<AIMediaResolutionPreset, { width: number; height: number }> = {
   '2k': { width: 2048, height: 2048 },
   '4k': { width: 4096, height: 4096 },
+};
+
+const QUALITY_PROFILE_DEFAULTS: Record<
+  AIMediaQualityProfile,
+  { imagesPerColor: number; includeVideo: boolean; resolutionPreset: AIMediaResolutionPreset }
+> = {
+  fast: {
+    imagesPerColor: 2,
+    includeVideo: false,
+    resolutionPreset: '2k',
+  },
+  balanced: {
+    imagesPerColor: 4,
+    includeVideo: true,
+    resolutionPreset: '2k',
+  },
+  premium: {
+    imagesPerColor: 6,
+    includeVideo: true,
+    resolutionPreset: '4k',
+  },
 };
 
 export const STRICT_PRODUCT_FIDELITY_RULES: string[] = [
@@ -94,23 +118,86 @@ function normalizeTargetColors(input: unknown): string[] {
   return out;
 }
 
-function normalizeImagesPerColor(input: unknown): number {
-  const parsed = Number(input);
-  if (!Number.isFinite(parsed)) return DEFAULT_IMAGES_PER_COLOR;
+function normalizeQualityProfile(input: unknown): AIMediaQualityProfile {
+  const normalized = String(input || '').trim().toLowerCase();
+  if (normalized === 'fast' || normalized === 'balanced' || normalized === 'premium') {
+    return normalized;
+  }
+  return DEFAULT_AI_MEDIA_QUALITY_PROFILE;
+}
+
+function resolveQualityProfileDefaults(): {
+  imagesPerColor: number;
+  includeVideo: boolean;
+  resolutionPreset: AIMediaResolutionPreset;
+} {
+  const profile = normalizeQualityProfile(process.env.AI_MEDIA_QUALITY_PROFILE);
+  const defaults = QUALITY_PROFILE_DEFAULTS[profile] || QUALITY_PROFILE_DEFAULTS[DEFAULT_AI_MEDIA_QUALITY_PROFILE];
+  return {
+    imagesPerColor: defaults.imagesPerColor,
+    includeVideo: defaults.includeVideo,
+    resolutionPreset: defaults.resolutionPreset,
+  };
+}
+
+function resolveMaxImagesPerColorCap(): number {
+  const parsed = Number(process.env.AI_MEDIA_MAX_IMAGES_PER_COLOR);
+  if (!Number.isFinite(parsed)) return MAX_IMAGES_PER_COLOR;
   return Math.min(MAX_IMAGES_PER_COLOR, Math.max(MIN_IMAGES_PER_COLOR, Math.round(parsed)));
 }
 
-function normalizeResolutionPreset(input: unknown): AIMediaResolutionPreset {
-  return input === '2k' ? '2k' : '4k';
+function parseBooleanEnv(value: unknown): boolean | undefined {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
+    return true;
+  }
+  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
+    return false;
+  }
+  return undefined;
+}
+
+function resolveIncludeVideoDefault(fallback: boolean): boolean {
+  const parsed = parseBooleanEnv(process.env.AI_MEDIA_ENABLE_VIDEO_DEFAULT);
+  return typeof parsed === 'boolean' ? parsed : fallback;
+}
+
+function normalizeImagesPerColor(input: unknown, fallback: number): number {
+  const maxCap = resolveMaxImagesPerColorCap();
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed)) {
+    return Math.min(maxCap, Math.max(MIN_IMAGES_PER_COLOR, Math.round(fallback)));
+  }
+  return Math.min(maxCap, Math.max(MIN_IMAGES_PER_COLOR, Math.round(parsed)));
+}
+
+function normalizeResolutionPreset(
+  input: unknown,
+  fallback: AIMediaResolutionPreset
+): AIMediaResolutionPreset {
+  if (input === '2k' || input === '4k') return input;
+  return fallback;
 }
 
 export function buildQualityContract(input: CreateAIMediaRunRequest): AIMediaQualityContract {
-  const resolutionPreset = normalizeResolutionPreset(input.resolutionPreset);
+  const qualityDefaults = resolveQualityProfileDefaults();
+  const includeVideoDefault = resolveIncludeVideoDefault(qualityDefaults.includeVideo);
+  const resolutionPreset = normalizeResolutionPreset(
+    input.resolutionPreset,
+    qualityDefaults.resolutionPreset
+  );
   const dims = RESOLUTION_PRESETS[resolutionPreset];
 
   return {
-    imagesPerColor: normalizeImagesPerColor(input.imagesPerColor),
-    includeVideo: input.includeVideo !== false,
+    imagesPerColor: normalizeImagesPerColor(
+      input.imagesPerColor,
+      qualityDefaults.imagesPerColor
+    ),
+    includeVideo:
+      typeof input.includeVideo === 'boolean'
+        ? input.includeVideo
+        : includeVideoDefault,
     resolutionPreset,
     outputWidth: dims.width,
     outputHeight: dims.height,

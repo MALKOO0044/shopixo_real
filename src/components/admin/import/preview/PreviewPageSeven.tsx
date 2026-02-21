@@ -38,7 +38,6 @@ type ReadyAssetsGroup = {
 };
 
 const POLL_INTERVAL_MS = 3500;
-const DEFAULT_IMAGES_PER_COLOR = 6;
 
 function collectTargetColors(product: PricedProduct): string[] {
   const candidates: string[] = [
@@ -246,8 +245,6 @@ export default function PreviewPageSeven({ product, sourceContext }: PreviewPage
         sourceImages: Array.isArray(product.images) ? product.images : [],
         sourceVideoUrl: product.videoUrl || undefined,
         colorImageMap: product.colorImageMap || undefined,
-        imagesPerColor: DEFAULT_IMAGES_PER_COLOR,
-        includeVideo: true,
         categoryLabel: product.categoryName || undefined,
       };
 
@@ -322,8 +319,7 @@ export default function PreviewPageSeven({ product, sourceContext }: PreviewPage
           <div>
             <h4 className="text-lg font-semibold text-gray-900">AI Media (Page 7)</h4>
             <p className="text-sm text-gray-600">
-              Generates {DEFAULT_IMAGES_PER_COLOR} images per color + 1 video per color using strict
-              fidelity checks.
+              Generates AI media using the active backend quality profile with strict fidelity checks.
             </p>
             <p className="mt-1 text-xs text-gray-500">
               Source: {sourceContext === "discover" ? "Product Discovery" : "CJ Product Details"}

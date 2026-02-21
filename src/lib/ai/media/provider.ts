@@ -5,6 +5,41 @@ import type { AIMediaType } from './types'
 export const AI_MEDIA_PROVIDER_REQUIRED_MESSAGE =
   'AI media provider is not configured. Set AI_MEDIA_PROVIDER_URL (and AI_MEDIA_PROVIDER_TOKEN if required), then retry generation.'
 
+const DEFAULT_PROVIDER_TIMEOUT_MS = 120000
+const DEFAULT_PROVIDER_RETRIES = 1
+
+function parsePositiveIntegerEnv(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  const rounded = Math.round(parsed)
+  if (rounded < min) return min
+  if (rounded > max) return max
+  return rounded
+}
+
+function resolveProviderTimeoutMs(): number {
+  return parsePositiveIntegerEnv(
+    process.env.AI_MEDIA_PROVIDER_TIMEOUT_MS,
+    DEFAULT_PROVIDER_TIMEOUT_MS,
+    15000,
+    300000
+  )
+}
+
+function resolveProviderRetries(): number {
+  return parsePositiveIntegerEnv(
+    process.env.AI_MEDIA_PROVIDER_RETRIES,
+    DEFAULT_PROVIDER_RETRIES,
+    0,
+    3
+  )
+}
+
 export interface GenerateAIMediaAssetInput {
   mediaType: AIMediaType
   cjProductId: string
@@ -68,6 +103,8 @@ async function tryExternalProvider(
   }
 
   const token = String(process.env.AI_MEDIA_PROVIDER_TOKEN || '').trim()
+  const timeoutMs = resolveProviderTimeoutMs()
+  const retries = resolveProviderRetries()
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   }
@@ -91,8 +128,8 @@ async function tryExternalProvider(
     method: 'POST',
     headers,
     body: JSON.stringify(payload),
-    timeoutMs: 120000,
-    retries: 1,
+    timeoutMs,
+    retries,
   })
 
   if (!meta.ok) {
@@ -111,12 +148,13 @@ async function tryExternalProvider(
 
   return {
     url,
-    provider: String(body.provider || 'external_provider'),
+    provider: String(body.provider || 'internal_microservice'),
     providerAssetId: body.assetId ? String(body.assetId) : undefined,
     promptSnapshot: {
       prompt,
       negativePrompt,
       providerPayload: payload,
+      providerRequestOptions: { timeoutMs, retries },
       providerResponseMeta: body.meta || null,
     },
   }

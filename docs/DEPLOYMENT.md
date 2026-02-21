@@ -132,6 +132,18 @@ Server-only (never expose to the client)
 Optional
 - `ADMIN_EMAILS` = `admin@example.com,owner@example.com`
 
+AI Media (Option B: separate microservice)
+- `AI_MEDIA_PROVIDER_URL` = `https://<your-ai-media-service-domain>/generate`
+- `AI_MEDIA_PROVIDER_TOKEN` = `<shared-bearer-token-between-this-app-and-provider-service>`
+- `AI_MEDIA_PROVIDER_TIMEOUT_MS` = `120000` (optional)
+- `AI_MEDIA_PROVIDER_RETRIES` = `1` (optional)
+- `AI_MEDIA_QUALITY_PROFILE` = `balanced` (recommended launch default)
+- `AI_MEDIA_MAX_IMAGES_PER_COLOR` = `4` (optional launch cap)
+- `AI_MEDIA_ENABLE_VIDEO_DEFAULT` = `true` (optional)
+
+Provider contract and integration details:
+- See `docs/AI_MEDIA_PROVIDER_MICROSERVICE.md`
+
 Do not commit real secrets to git. Use the platform’s encrypted store.
 
 ---

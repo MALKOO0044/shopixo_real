@@ -13,6 +13,14 @@ const EnvSchema = z.object({
   ADMIN_EMAIL_DOMAINS: z.string().optional(),
   OPENAI_API_KEY: z.string().min(1).optional(),
   AI_MODEL_TEXT: z.string().optional(),
+  AI_MEDIA_PROVIDER_URL: z.string().url().optional(),
+  AI_MEDIA_PROVIDER_TOKEN: z.string().min(1).optional(),
+  AI_MEDIA_PROVIDER_TIMEOUT_MS: z.string().optional(),
+  AI_MEDIA_PROVIDER_RETRIES: z.string().optional(),
+  AI_MEDIA_QUALITY_PROFILE: z.enum(['fast', 'balanced', 'premium']).optional(),
+  AI_MEDIA_MAX_IMAGES_PER_COLOR: z.string().optional(),
+  AI_MEDIA_ENABLE_VIDEO_DEFAULT: z.string().optional(),
+  AI_MEDIA_PROVIDER_MAX_CONCURRENCY: z.string().optional(),
 })
 
 export type Env = z.infer<typeof EnvSchema>

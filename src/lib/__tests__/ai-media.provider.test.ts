@@ -29,16 +29,22 @@ const baseInput = {
 describe('AI media provider integration', () => {
   const prevProviderUrl = process.env.AI_MEDIA_PROVIDER_URL;
   const prevProviderToken = process.env.AI_MEDIA_PROVIDER_TOKEN;
+  const prevProviderTimeout = process.env.AI_MEDIA_PROVIDER_TIMEOUT_MS;
+  const prevProviderRetries = process.env.AI_MEDIA_PROVIDER_RETRIES;
 
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.AI_MEDIA_PROVIDER_URL = 'https://provider.example.com/generate';
     process.env.AI_MEDIA_PROVIDER_TOKEN = 'provider-token';
+    delete process.env.AI_MEDIA_PROVIDER_TIMEOUT_MS;
+    delete process.env.AI_MEDIA_PROVIDER_RETRIES;
   });
 
   afterAll(() => {
     process.env.AI_MEDIA_PROVIDER_URL = prevProviderUrl;
     process.env.AI_MEDIA_PROVIDER_TOKEN = prevProviderToken;
+    process.env.AI_MEDIA_PROVIDER_TIMEOUT_MS = prevProviderTimeout;
+    process.env.AI_MEDIA_PROVIDER_RETRIES = prevProviderRetries;
   });
 
   it('throws when provider URL is missing', async () => {
@@ -86,6 +92,36 @@ describe('AI media provider integration', () => {
       expect.objectContaining({
         providerPayload: expect.objectContaining({ mediaType: 'video' }),
       })
+    );
+  });
+
+  it('applies provider timeout/retry env configuration to remote microservice calls', async () => {
+    process.env.AI_MEDIA_PROVIDER_TIMEOUT_MS = '45000';
+    process.env.AI_MEDIA_PROVIDER_RETRIES = '2';
+
+    mockFetchWithMeta.mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: {
+        outputUrl: 'https://cdn.example.com/generated/output.jpg',
+      },
+    });
+
+    const result = await generateAIMediaAsset(baseInput);
+
+    expect(result.provider).toBe('internal_microservice');
+    expect(result.promptSnapshot).toEqual(
+      expect.objectContaining({
+        providerRequestOptions: {
+          timeoutMs: 45000,
+          retries: 2,
+        },
+      })
+    );
+
+    expect(mockFetchWithMeta).toHaveBeenCalledWith(
+      'https://provider.example.com/generate',
+      expect.objectContaining({ timeoutMs: 45000, retries: 2 })
     );
   });
 });
