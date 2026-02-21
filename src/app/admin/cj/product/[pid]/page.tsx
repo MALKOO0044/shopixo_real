@@ -19,6 +19,7 @@ import {
   Box,
   Truck,
   Package,
+  Sparkles,
 } from 'lucide-react'
 import type { PricedProduct } from '@/components/admin/import/preview/types'
 import PreviewPageOne from '@/components/admin/import/preview/PreviewPageOne'
@@ -26,6 +27,7 @@ import PreviewPageThree from '@/components/admin/import/preview/PreviewPageThree
 import PreviewPageFour from '@/components/admin/import/preview/PreviewPageFour'
 import PreviewPageFive from '@/components/admin/import/preview/PreviewPageFive'
 import PreviewPageSix from '@/components/admin/import/preview/PreviewPageSix'
+import PreviewPageSeven from '@/components/admin/import/preview/PreviewPageSeven'
 import { normalizeDisplayedRating } from '@/lib/rating/engine'
 import { sarToUsd } from '@/lib/pricing'
 
@@ -59,7 +61,7 @@ function ImageWithFallback({ src, alt, className }: { src: string; alt: string; 
   )
 }
 
-type TabType = 'overview' | 'images' | 'specs' | 'inventory' | 'shipping' | 'variants'
+type TabType = 'overview' | 'images' | 'specs' | 'inventory' | 'shipping' | 'variants' | 'aiMedia'
 
 export default function CjProductAdminPage({ params }: { params: { pid: string } }) {
   const pid = decodeURIComponent(params.pid)
@@ -226,6 +228,7 @@ export default function CjProductAdminPage({ params }: { params: { pid: string }
     { id: 'inventory', label: 'Stock & Popularity', icon: Box },
     { id: 'shipping', label: 'Shipping & Delivery', icon: Truck },
     { id: 'variants', label: 'Variants', icon: Layers },
+    { id: 'aiMedia', label: 'AI Media', icon: Sparkles },
   ]
 
   if (loading) {
@@ -450,6 +453,9 @@ export default function CjProductAdminPage({ params }: { params: { pid: string }
                 )}
                 {activeTab === 'variants' && (
                   <PreviewPageSix product={product} />
+                )}
+                {activeTab === 'aiMedia' && (
+                  <PreviewPageSeven product={product} sourceContext="cj_detail" />
                 )}
               </div>
             </div>

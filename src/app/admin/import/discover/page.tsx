@@ -3,12 +3,13 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import type { Route } from "next";
-import { Package, Loader2, CheckCircle, Star, Trash2, Eye, X, Play, TrendingUp, ChevronLeft, ChevronRight, Image as ImageIcon, BarChart3, DollarSign, Grid3X3, FileText, Truck } from "lucide-react";
+import { Package, Loader2, CheckCircle, Star, Trash2, Eye, X, Play, TrendingUp, ChevronLeft, ChevronRight, Image as ImageIcon, BarChart3, DollarSign, Grid3X3, FileText, Truck, Sparkles } from "lucide-react";
 import PreviewPageOne from "@/components/admin/import/preview/PreviewPageOne";
 import PreviewPageThree from "@/components/admin/import/preview/PreviewPageThree";
 import PreviewPageFour from "@/components/admin/import/preview/PreviewPageFour";
 import PreviewPageFive from "@/components/admin/import/preview/PreviewPageFive";
 import PreviewPageSix from "@/components/admin/import/preview/PreviewPageSix";
+import PreviewPageSeven from "@/components/admin/import/preview/PreviewPageSeven";
 import type { PricedProduct, PricedVariant } from "@/components/admin/import/preview/types";
 import { sarToUsd } from "@/lib/pricing";
 
@@ -79,7 +80,7 @@ export default function ProductDiscoveryPage() {
   
   const [previewProduct, setPreviewProduct] = useState<PricedProduct | null>(null);
   const [previewPage, setPreviewPage] = useState(1);
-  const TOTAL_PREVIEW_PAGES = 6;
+  const TOTAL_PREVIEW_PAGES = 7;
 
   const quantityPresets = [2000, 1500, 1000, 500, 250, 100, 50, 25, 10];
   const profitPresets = [100, 50, 25, 15, 8];
@@ -395,6 +396,7 @@ export default function ProductDiscoveryPage() {
       case 4: return "Stock & Popularity";
       case 5: return "Shipping & Delivery";
       case 6: return "Price Details";
+      case 7: return "AI Media";
       default: return "Product Preview";
     }
   };
@@ -407,6 +409,7 @@ export default function ProductDiscoveryPage() {
       case 4: return <BarChart3 className="h-4 w-4" />;
       case 5: return <Truck className="h-4 w-4" />;
       case 6: return <DollarSign className="h-4 w-4" />;
+      case 7: return <Sparkles className="h-4 w-4" />;
       default: return null;
     }
   };
@@ -1340,6 +1343,14 @@ export default function ProductDiscoveryPage() {
               {/* Page 6: Variant Pricing */}
               {previewPage === 6 && (
                 <PreviewPageSix product={previewProduct} />
+              )}
+
+              {/* Page 7: AI Media */}
+              {previewPage === 7 && (
+                <PreviewPageSeven
+                  product={previewProduct}
+                  sourceContext="discover"
+                />
               )}
             </div>
             
