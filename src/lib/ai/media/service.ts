@@ -7,7 +7,7 @@ import { logAIAction, updateAIAction } from '@/lib/ai/action-logger'
 import { recordMetric } from '@/lib/ai/metrics-tracker'
 import { resolveAIMediaCategoryProfile } from './category-profiles'
 import { evaluateAIMediaFidelity } from './fidelity'
-import { generateAIMediaAsset } from './provider'
+import { assertAIMediaProviderConfigured, generateAIMediaAsset } from './provider'
 import { normalizeMediaRunRequest, selectBestAnchorImage } from './quality-policy'
 import type {
   AIMediaAssetRecord,
@@ -148,6 +148,87 @@ function extensionFromContentType(contentType: string | null, mediaType: AIMedia
   if (m?.[1]) return m[1].toLowerCase()
 
   return mediaType === 'video' ? 'mp4' : 'jpg'
+}
+
+function normalizeComparableUrl(value: unknown): string {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+
+  try {
+    const parsed = new URL(raw)
+    return `${parsed.origin}${parsed.pathname}`.toLowerCase()
+  } catch {
+    return raw.split('#')[0].split('?')[0].toLowerCase()
+  }
+}
+
+function inferMediaTypeFromContentType(contentType: string | null): AIMediaType | 'unknown' {
+  const lower = String(contentType || '').toLowerCase()
+  if (lower.startsWith('image/')) return 'image'
+  if (lower.startsWith('video/')) return 'video'
+  return 'unknown'
+}
+
+function inferMediaTypeFromUrl(url: string): AIMediaType | 'unknown' {
+  const lower = String(url || '').toLowerCase().split('?')[0].split('#')[0]
+  if (/\.(png|jpg|jpeg|webp|avif|gif|bmp|svg)$/.test(lower)) return 'image'
+  if (/\.(mp4|webm|mov|m4v|avi|mkv|ogv)$/.test(lower)) return 'video'
+  return 'unknown'
+}
+
+async function detectRemoteMediaType(url: string): Promise<AIMediaType | 'unknown'> {
+  const normalized = String(url || '').trim()
+  if (!normalized) return 'unknown'
+
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), 20000)
+
+  try {
+    const head = await fetch(normalized, {
+      method: 'HEAD',
+      cache: 'no-store',
+      signal: ac.signal,
+    })
+
+    if (head.ok) {
+      const fromHeader = inferMediaTypeFromContentType(head.headers.get('content-type'))
+      if (fromHeader !== 'unknown') return fromHeader
+    }
+  } catch {
+    // fall through to URL heuristics
+  } finally {
+    clearTimeout(timer)
+  }
+
+  return inferMediaTypeFromUrl(normalized)
+}
+
+function forceRejectFidelityResult(
+  fidelity: ReturnType<typeof evaluateAIMediaFidelity>,
+  key: string,
+  reason: string
+): ReturnType<typeof evaluateAIMediaFidelity> {
+  return {
+    ...fidelity,
+    strictPass: false,
+    checks: [
+      ...(Array.isArray(fidelity?.checks) ? fidelity.checks : []),
+      {
+        key,
+        score: 0,
+        required: true,
+        passed: false,
+        reason,
+      },
+    ],
+    summary: reason,
+  }
+}
+
+function buildAssetDedupeKey(color: string, mediaType: AIMediaType, url: string): string {
+  const comparableUrl = normalizeComparableUrl(url)
+  if (!comparableUrl) return ''
+  return `${String(color || '').trim().toLowerCase()}|${mediaType}|${comparableUrl}`
 }
 
 async function ensureProductsBucket(db: SupabaseClient): Promise<void> {
@@ -369,6 +450,8 @@ export async function createAIMediaRun(input: CreateAIMediaRunRequest): Promise<
       `AI media tables missing (${missingTables.join(', ')}). ${AI_MEDIA_SCHEMA_FIX_MESSAGE}`
     )
   }
+
+  assertAIMediaProviderConfigured()
 
   const hydrated = await hydrateMediaRunRequest(db, input)
   const normalized = normalizeMediaRunRequest(hydrated)
@@ -614,6 +697,7 @@ export async function runMediaJob(jobId: number): Promise<{
   let rejectedVideos = 0
   let haltedAsCanceled = false
   let runErrorText: string | null = null
+  const approvedAssetKeys = new Set<string>()
 
   for (const color of normalized.targetColors) {
     const beforeColor = {
@@ -674,10 +758,49 @@ export async function runMediaJob(jobId: number): Promise<{
           requiredChecks: normalized.quality.requiredChecks,
         })
 
+        let normalizedFidelity = fidelity
+        let rejectionReason: string | null = null
+
+        const detectedOutputMediaType = await detectRemoteMediaType(generated.url)
+        if (detectedOutputMediaType === 'video') {
+          rejectionReason = `Expected image output but provider returned video content for color ${color} (#${i})`
+          normalizedFidelity = forceRejectFidelityResult(normalizedFidelity, 'media_type_mismatch', rejectionReason)
+        }
+
+        const generatedComparableUrl = normalizeComparableUrl(generated.url)
+        const anchorComparableUrl = normalizeComparableUrl(anchorImage)
+        if (
+          !rejectionReason &&
+          generatedComparableUrl &&
+          anchorComparableUrl &&
+          generatedComparableUrl === anchorComparableUrl
+        ) {
+          rejectionReason = `Generated image duplicated source anchor for color ${color} (#${i})`
+          normalizedFidelity = forceRejectFidelityResult(normalizedFidelity, 'source_copy_detected', rejectionReason)
+        }
+
+        const sourceVideoComparableUrl = normalizeComparableUrl(normalized.sourceVideoUrl || '')
+        if (
+          !rejectionReason &&
+          generatedComparableUrl &&
+          sourceVideoComparableUrl &&
+          generatedComparableUrl === sourceVideoComparableUrl
+        ) {
+          rejectionReason = `Generated image duplicated source video URL for color ${color} (#${i})`
+          normalizedFidelity = forceRejectFidelityResult(normalizedFidelity, 'source_copy_detected', rejectionReason)
+        }
+
+        const dedupeKey = buildAssetDedupeKey(color, 'image', generated.url)
+        if (!rejectionReason && dedupeKey && approvedAssetKeys.has(dedupeKey)) {
+          rejectionReason = `Duplicate generated image URL detected for color ${color} (#${i})`
+          normalizedFidelity = forceRejectFidelityResult(normalizedFidelity, 'duplicate_output_url', rejectionReason)
+        }
+
         let storageUrl = generated.url
-        const status: 'ready' | 'rejected' = fidelity.strictPass ? 'ready' : 'rejected'
+        const status: 'ready' | 'rejected' = normalizedFidelity.strictPass ? 'ready' : 'rejected'
 
         if (status === 'ready') {
+          if (dedupeKey) approvedAssetKeys.add(dedupeKey)
           storageUrl = await uploadRemoteAssetToStorage({
             db,
             runId,
@@ -701,7 +824,7 @@ export async function runMediaJob(jobId: number): Promise<{
           provider: generated.provider || null,
           provider_asset_id: generated.providerAssetId || null,
           prompt_snapshot: generated.promptSnapshot || null,
-          fidelity,
+          fidelity: normalizedFidelity,
           status,
         }
 
@@ -716,6 +839,9 @@ export async function runMediaJob(jobId: number): Promise<{
           approvedImages += 1
         } else {
           rejectedImages += 1
+          if (rejectionReason && !runErrorText) {
+            runErrorText = rejectionReason
+          }
         }
       } catch (e: any) {
         rejectedImages += 1
@@ -758,10 +884,49 @@ export async function runMediaJob(jobId: number): Promise<{
           requiredChecks: normalized.quality.requiredChecks,
         })
 
+        let normalizedFidelity = fidelity
+        let rejectionReason: string | null = null
+
+        const detectedOutputMediaType = await detectRemoteMediaType(generatedVideo.url)
+        if (detectedOutputMediaType !== 'video') {
+          rejectionReason = `Expected video output but provider returned ${detectedOutputMediaType} content for color ${color}`
+          normalizedFidelity = forceRejectFidelityResult(normalizedFidelity, 'media_type_mismatch', rejectionReason)
+        }
+
+        const generatedComparableUrl = normalizeComparableUrl(generatedVideo.url)
+        const anchorComparableUrl = normalizeComparableUrl(anchorImage)
+        if (
+          !rejectionReason &&
+          generatedComparableUrl &&
+          anchorComparableUrl &&
+          generatedComparableUrl === anchorComparableUrl
+        ) {
+          rejectionReason = `Generated video duplicated source anchor image for color ${color}`
+          normalizedFidelity = forceRejectFidelityResult(normalizedFidelity, 'source_copy_detected', rejectionReason)
+        }
+
+        const sourceVideoComparableUrl = normalizeComparableUrl(normalized.sourceVideoUrl || '')
+        if (
+          !rejectionReason &&
+          generatedComparableUrl &&
+          sourceVideoComparableUrl &&
+          generatedComparableUrl === sourceVideoComparableUrl
+        ) {
+          rejectionReason = `Generated video duplicated source video URL for color ${color}`
+          normalizedFidelity = forceRejectFidelityResult(normalizedFidelity, 'source_copy_detected', rejectionReason)
+        }
+
+        const dedupeKey = buildAssetDedupeKey(color, 'video', generatedVideo.url)
+        if (!rejectionReason && dedupeKey && approvedAssetKeys.has(dedupeKey)) {
+          rejectionReason = `Duplicate generated video URL detected for color ${color}`
+          normalizedFidelity = forceRejectFidelityResult(normalizedFidelity, 'duplicate_output_url', rejectionReason)
+        }
+
         let storageUrl = generatedVideo.url
-        const status: 'ready' | 'rejected' = fidelity.strictPass ? 'ready' : 'rejected'
+        const status: 'ready' | 'rejected' = normalizedFidelity.strictPass ? 'ready' : 'rejected'
 
         if (status === 'ready') {
+          if (dedupeKey) approvedAssetKeys.add(dedupeKey)
           storageUrl = await uploadRemoteAssetToStorage({
             db,
             runId,
@@ -785,7 +950,7 @@ export async function runMediaJob(jobId: number): Promise<{
           provider: generatedVideo.provider || null,
           provider_asset_id: generatedVideo.providerAssetId || null,
           prompt_snapshot: generatedVideo.promptSnapshot || null,
-          fidelity,
+          fidelity: normalizedFidelity,
           status,
         }
 
@@ -800,6 +965,9 @@ export async function runMediaJob(jobId: number): Promise<{
           approvedVideos += 1
         } else {
           rejectedVideos += 1
+          if (rejectionReason && !runErrorText) {
+            runErrorText = rejectionReason
+          }
         }
       } catch (e: any) {
         rejectedVideos += 1

@@ -2,6 +2,9 @@ import { fetchWithMeta } from '@/lib/http'
 import { buildStrictFidelityPromptBlock } from './quality-policy'
 import type { AIMediaType } from './types'
 
+export const AI_MEDIA_PROVIDER_REQUIRED_MESSAGE =
+  'AI media provider is not configured. Set AI_MEDIA_PROVIDER_URL (and AI_MEDIA_PROVIDER_TOKEN if required), then retry generation.'
+
 export interface GenerateAIMediaAssetInput {
   mediaType: AIMediaType
   cjProductId: string
@@ -22,6 +25,16 @@ export interface GenerateAIMediaAssetOutput {
   provider: string
   providerAssetId?: string
   promptSnapshot: Record<string, any>
+}
+
+export function isAIMediaProviderConfigured(): boolean {
+  return Boolean(String(process.env.AI_MEDIA_PROVIDER_URL || '').trim())
+}
+
+export function assertAIMediaProviderConfigured(): void {
+  if (!isAIMediaProviderConfigured()) {
+    throw new Error(AI_MEDIA_PROVIDER_REQUIRED_MESSAGE)
+  }
 }
 
 function buildPrompt(input: GenerateAIMediaAssetInput): string {
@@ -48,9 +61,11 @@ async function tryExternalProvider(
   input: GenerateAIMediaAssetInput,
   prompt: string,
   negativePrompt: string
-): Promise<GenerateAIMediaAssetOutput | null> {
+): Promise<GenerateAIMediaAssetOutput> {
   const providerUrl = String(process.env.AI_MEDIA_PROVIDER_URL || '').trim()
-  if (!providerUrl) return null
+  if (!providerUrl) {
+    throw new Error(AI_MEDIA_PROVIDER_REQUIRED_MESSAGE)
+  }
 
   const token = String(process.env.AI_MEDIA_PROVIDER_TOKEN || '').trim()
   const headers: Record<string, string> = {
@@ -81,11 +96,11 @@ async function tryExternalProvider(
   })
 
   if (!meta.ok) {
-    throw new Error(
+    const providerError =
       typeof meta.body === 'string'
         ? meta.body
         : (meta.body?.error || `AI media provider failed with status ${meta.status}`)
-    )
+    throw new Error(`AI media provider request failed: ${providerError}`)
   }
 
   const body = meta.body || {}
@@ -110,34 +125,10 @@ async function tryExternalProvider(
 export async function generateAIMediaAsset(
   input: GenerateAIMediaAssetInput
 ): Promise<GenerateAIMediaAssetOutput> {
+  assertAIMediaProviderConfigured()
+
   const prompt = buildPrompt(input)
   const negativePrompt = input.categoryNegativePrompt
 
-  try {
-    const external = await tryExternalProvider(input, prompt, negativePrompt)
-    if (external) return external
-  } catch (error: any) {
-    // Fall through to deterministic fallback when provider fails.
-    // The pipeline remains operational and the run is marked partial/failed by fidelity checks.
-    console.warn('[AI Media] External provider failed, falling back:', error?.message || error)
-  }
-
-  const fallbackUrl = input.mediaType === 'video'
-    ? (input.sourceVideoUrl || input.anchorImageUrl)
-    : input.anchorImageUrl
-
-  if (!fallbackUrl) {
-    throw new Error('No fallback source URL available for AI media generation')
-  }
-
-  return {
-    url: fallbackUrl,
-    provider: 'deterministic_fallback',
-    promptSnapshot: {
-      prompt,
-      negativePrompt,
-      fallback: true,
-      reason: 'No external AI media provider configured',
-    },
-  }
+  return tryExternalProvider(input, prompt, negativePrompt)
 }

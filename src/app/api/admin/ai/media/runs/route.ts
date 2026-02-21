@@ -54,6 +54,15 @@ function isSchemaOrTableError(message: string): boolean {
   )
 }
 
+function isProviderError(message: string): boolean {
+  const normalized = String(message || '').toLowerCase()
+  return (
+    normalized.includes('ai media provider') ||
+    normalized.includes('provider is not configured') ||
+    normalized.includes('provider request failed')
+  )
+}
+
 async function enforceRateLimit(req: Request, requestId: string): Promise<NextResponse | null> {
   try {
     const ip = getClientIp(req)
@@ -166,7 +175,7 @@ export async function POST(req: Request) {
     const lower = String(message).toLowerCase()
     const status = lower.includes('required') || lower.includes('at least one')
       ? 400
-      : isSchemaOrTableError(message) || lower.includes('missing')
+      : isSchemaOrTableError(message) || isProviderError(message) || lower.includes('missing')
         ? 503
         : 500
 
