@@ -27,6 +27,30 @@ function getAdmin(): SupabaseClient | null {
   return createClient(url, key)
 }
 
+const AI_MEDIA_SCHEMA_FIX_MESSAGE =
+  'AI media schema is missing or outdated. Run supabase/migrations/20260221T153000_ai_media_generation_core.sql in Supabase SQL Editor, then go to Settings > API and click "Reload schema".'
+
+function isMissingTableOrSchemaCacheError(error: unknown): boolean {
+  const code = String((error as any)?.code || '').toUpperCase()
+  const message = String((error as any)?.message || error || '')
+  const details = String((error as any)?.details || '')
+  const hint = String((error as any)?.hint || '')
+  const combined = `${message} ${details} ${hint}`.toLowerCase()
+
+  if (code === '42P01' || code === 'PGRST205') return true
+  if (/does not exist|relation .* does not exist/i.test(combined)) return true
+  if (/could not find the table .* in the schema cache/i.test(combined)) return true
+  if (combined.includes('schema cache') && combined.includes('table')) return true
+
+  return false
+}
+
+function toAIMediaSchemaErrorMessage(originalMessage?: string): string {
+  const base = AI_MEDIA_SCHEMA_FIX_MESSAGE
+  const detail = String(originalMessage || '').trim()
+  return detail ? `${base} Original error: ${detail}` : base
+}
+
 function parseJsonMaybe(value: unknown): unknown {
   if (typeof value !== 'string') return value
   try {
@@ -336,7 +360,14 @@ export async function createAIMediaRun(input: CreateAIMediaRunRequest): Promise<
   ])
 
   if (!runsTableExists || !assetsTableExists) {
-    throw new Error('AI media tables are missing. Please run the latest database migrations.')
+    const missingTables = [
+      !runsTableExists ? 'ai_media_runs' : null,
+      !assetsTableExists ? 'ai_media_assets' : null,
+    ].filter(Boolean)
+
+    throw new Error(
+      `AI media tables missing (${missingTables.join(', ')}). ${AI_MEDIA_SCHEMA_FIX_MESSAGE}`
+    )
   }
 
   const hydrated = await hydrateMediaRunRequest(db, input)
@@ -390,6 +421,9 @@ export async function createAIMediaRun(input: CreateAIMediaRunRequest): Promise<
     .single()
 
   if (insertError || !insertedRun) {
+    if (insertError && isMissingTableOrSchemaCacheError(insertError)) {
+      throw new Error(toAIMediaSchemaErrorMessage(insertError?.message))
+    }
     throw new Error(insertError?.message || 'Failed to create AI media run')
   }
 

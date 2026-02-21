@@ -18,6 +18,21 @@ type ColumnCache = Map<string, boolean>;
 const tableCache = new Map<string, boolean>();
 const columnCache = new Map<string, ColumnCache>();
 
+function isMissingTableError(error: unknown): boolean {
+  const code = String((error as any)?.code || '').toUpperCase();
+  const message = String((error as any)?.message || error || '');
+  const details = String((error as any)?.details || '');
+  const hint = String((error as any)?.hint || '');
+  const combined = `${message} ${details} ${hint}`.toLowerCase();
+
+  if (code === '42P01' || code === 'PGRST205') return true;
+  if (/does not exist|relation .* does not exist/i.test(combined)) return true;
+  if (/could not find the table .* in the schema cache/i.test(combined)) return true;
+  if (combined.includes('schema cache') && combined.includes('table')) return true;
+
+  return false;
+}
+
 export function clearDbFeatureCache() {
   tableCache.clear();
   columnCache.clear();
@@ -37,8 +52,7 @@ export async function hasTable(table: string): Promise<boolean> {
   try {
     const { error } = await supabase.from(table).select('*').limit(0);
     if (error) {
-      const msg = String((error as any)?.message || error);
-      if (/does not exist|relation .* does not exist/i.test(msg)) {
+      if (isMissingTableError(error)) {
         // Don't cache false - table might be created later
         return false;
       }

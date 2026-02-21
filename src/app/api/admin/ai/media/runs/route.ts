@@ -42,6 +42,18 @@ function parsePositiveInteger(value: unknown): number | undefined {
   return Math.floor(parsed)
 }
 
+function isSchemaOrTableError(message: string): boolean {
+  const normalized = String(message || '').toLowerCase()
+  return (
+    normalized.includes('schema cache') ||
+    normalized.includes('could not find the table') ||
+    normalized.includes('relation') && normalized.includes('does not exist') ||
+    normalized.includes('does not exist') ||
+    normalized.includes('pgrst205') ||
+    normalized.includes('42p01')
+  )
+}
+
 async function enforceRateLimit(req: Request, requestId: string): Promise<NextResponse | null> {
   try {
     const ip = getClientIp(req)
@@ -154,7 +166,7 @@ export async function POST(req: Request) {
     const lower = String(message).toLowerCase()
     const status = lower.includes('required') || lower.includes('at least one')
       ? 400
-      : lower.includes('missing')
+      : isSchemaOrTableError(message) || lower.includes('missing')
         ? 503
         : 500
 
