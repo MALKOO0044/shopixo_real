@@ -11,6 +11,14 @@ export type AIMediaRunStatus =
 export type AIMediaAssetStatus = 'ready' | 'rejected' | 'archived';
 export type AIMediaType = 'image' | 'video';
 export type AIMediaResolutionPreset = '2k' | '4k';
+export type AIMediaRenderMode = 'background_only_preserve_product' | 'pose_aware_model_wear';
+export type AIMediaViewTag = 'front' | 'back' | 'side' | 'detail' | 'unknown';
+export type AIMediaFaceVisibility = 'half_face_allowed' | 'face_hidden';
+
+export interface AIMediaFaceVisibilityPolicy {
+  upperWear: AIMediaFaceVisibility;
+  fullBody: AIMediaFaceVisibility;
+}
 
 export interface CreateAIMediaRunRequest {
   cjProductId: string;
@@ -29,6 +37,11 @@ export interface CreateAIMediaRunRequest {
   categoryLabel?: string;
   preferredVisualStyle?: string;
   luxuryPresentation?: boolean;
+  renderMode?: AIMediaRenderMode;
+  allowedViews?: AIMediaViewTag[];
+  sourceViewMap?: Record<string, AIMediaViewTag>;
+  enforceSourceViewOnly?: boolean;
+  faceVisibilityPolicy?: Partial<AIMediaFaceVisibilityPolicy>;
 }
 
 export interface AIMediaQualityContract {
@@ -56,6 +69,11 @@ export interface NormalizedAIMediaRunRequest {
   categoryLabel?: string;
   preferredVisualStyle?: string;
   luxuryPresentation: boolean;
+  renderMode: AIMediaRenderMode;
+  allowedViews: AIMediaViewTag[];
+  sourceViewMap: Record<string, AIMediaViewTag>;
+  enforceSourceViewOnly: boolean;
+  faceVisibilityPolicy: AIMediaFaceVisibilityPolicy;
   quality: AIMediaQualityContract;
 }
 
@@ -109,6 +127,7 @@ export interface AIMediaFidelityResult {
   overallScore: number;
   checks: AIMediaFidelityCheck[];
   summary: string;
+  rejectionReasons?: string[];
 }
 
 export interface AIMediaColorProgress {

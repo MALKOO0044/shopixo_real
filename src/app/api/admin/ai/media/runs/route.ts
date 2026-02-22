@@ -4,8 +4,11 @@ import { loggerForRequest } from '@/lib/log'
 import { aiMediaLimiter, getClientIp } from '@/lib/ratelimit'
 import { createAIMediaRun, isAIMediaFeatureEnabled, listAIMediaRuns } from '@/lib/ai/media/service'
 import type {
+  AIMediaFaceVisibilityPolicy,
+  AIMediaRenderMode,
   AIMediaRunStatus,
   AIMediaSourceContext,
+  AIMediaViewTag,
   CreateAIMediaRunRequest,
 } from '@/lib/ai/media/types'
 
@@ -40,6 +43,58 @@ function parsePositiveInteger(value: unknown): number | undefined {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed <= 0) return undefined
   return Math.floor(parsed)
+}
+
+function parseRenderMode(value: unknown): AIMediaRenderMode | undefined {
+  return value === 'background_only_preserve_product' || value === 'pose_aware_model_wear'
+    ? value
+    : undefined
+}
+
+function parseViewTag(value: unknown): AIMediaViewTag | undefined {
+  return value === 'front' || value === 'back' || value === 'side' || value === 'detail' || value === 'unknown'
+    ? value
+    : undefined
+}
+
+function parseAllowedViews(value: unknown): AIMediaViewTag[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const out: AIMediaViewTag[] = []
+  const seen = new Set<string>()
+  for (const raw of value) {
+    const tag = parseViewTag(raw)
+    if (!tag || tag === 'unknown') continue
+    if (seen.has(tag)) continue
+    seen.add(tag)
+    out.push(tag)
+  }
+  return out.length > 0 ? out : undefined
+}
+
+function parseSourceViewMap(value: unknown): Record<string, AIMediaViewTag> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const out: Record<string, AIMediaViewTag> = {}
+  for (const [rawUrl, rawTag] of Object.entries(value as Record<string, unknown>)) {
+    const url = String(rawUrl || '').trim()
+    if (!url || !/^https?:\/\//i.test(url)) continue
+    const tag = parseViewTag(rawTag)
+    if (!tag) continue
+    out[url] = tag
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+function parseFaceVisibilityPolicy(value: unknown): Partial<AIMediaFaceVisibilityPolicy> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const raw = value as Partial<AIMediaFaceVisibilityPolicy>
+  const out: Partial<AIMediaFaceVisibilityPolicy> = {}
+  if (raw.upperWear === 'half_face_allowed' || raw.upperWear === 'face_hidden') {
+    out.upperWear = raw.upperWear
+  }
+  if (raw.fullBody === 'half_face_allowed' || raw.fullBody === 'face_hidden') {
+    out.fullBody = raw.fullBody
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 function isSchemaOrTableError(message: string): boolean {
@@ -163,6 +218,14 @@ export async function POST(req: Request) {
       categoryLabel: typeof body?.categoryLabel === 'string' ? body.categoryLabel : undefined,
       preferredVisualStyle: typeof body?.preferredVisualStyle === 'string' ? body.preferredVisualStyle : undefined,
       luxuryPresentation: typeof body?.luxuryPresentation === 'boolean' ? body.luxuryPresentation : undefined,
+      renderMode: parseRenderMode(body?.renderMode),
+      allowedViews: parseAllowedViews(body?.allowedViews),
+      sourceViewMap: parseSourceViewMap(body?.sourceViewMap),
+      enforceSourceViewOnly:
+        typeof body?.enforceSourceViewOnly === 'boolean'
+          ? body.enforceSourceViewOnly
+          : undefined,
+      faceVisibilityPolicy: parseFaceVisibilityPolicy(body?.faceVisibilityPolicy),
     }
 
     const created = await createAIMediaRun(requestPayload)

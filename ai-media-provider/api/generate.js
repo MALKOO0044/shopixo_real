@@ -1,7 +1,11 @@
 const crypto = require('crypto')
 
-const DEFAULT_VIDEO_URL =
-  'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4'
+const VALID_MEDIA_TYPES = new Set(['image', 'video'])
+const VALID_RENDER_MODES = new Set([
+  'background_only_preserve_product',
+  'pose_aware_model_wear',
+])
+const VALID_VIEW_TAGS = new Set(['front', 'back', 'side', 'detail', 'unknown'])
 
 function sendJson(res, statusCode, payload) {
   res.statusCode = statusCode
@@ -63,33 +67,71 @@ function toSafeSeedPart(value) {
     .replace(/^-|-$/g, '')
 }
 
-function buildImageUrl(payload) {
-  const width = Number(payload?.width)
-  const height = Number(payload?.height)
-  const safeWidth = Number.isFinite(width) && width > 0 ? Math.min(Math.round(width), 4096) : 2048
-  const safeHeight = Number.isFinite(height) && height > 0 ? Math.min(Math.round(height), 4096) : 2048
-
-  const seedParts = [
-    toSafeSeedPart(payload?.cjProductId) || 'product',
-    toSafeSeedPart(payload?.color) || 'color',
-    toSafeSeedPart(payload?.mediaIndex) || '1',
-    Date.now().toString(36),
-  ]
-
-  const seed = encodeURIComponent(seedParts.join('-'))
-  return `https://picsum.photos/seed/${seed}/${safeWidth}/${safeHeight}.jpg`
+function parseBooleanEnv(value, fallback = false) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (!normalized) return fallback
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
+    return true
+  }
+  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
+    return false
+  }
+  return fallback
 }
 
-function buildVideoUrl(payload) {
-  const seed = encodeURIComponent(
-    [
-      toSafeSeedPart(payload?.cjProductId) || 'product',
-      toSafeSeedPart(payload?.color) || 'color',
-      toSafeSeedPart(payload?.mediaIndex) || '1',
-    ].join('-')
-  )
+function normalizeRenderMode(value, fallback = 'background_only_preserve_product') {
+  const mode = String(value || '').trim()
+  if (VALID_RENDER_MODES.has(mode)) return mode
+  return fallback
+}
 
-  return `${DEFAULT_VIDEO_URL}?v=${seed}`
+function normalizeViewTag(value) {
+  const tag = String(value || '').trim().toLowerCase()
+  if (VALID_VIEW_TAGS.has(tag)) return tag
+  return 'unknown'
+}
+
+function resolveRuntimeBackendUrl() {
+  return String(
+    process.env.AI_MEDIA_RUNTIME_BACKEND_URL ||
+      process.env.AI_MEDIA_UPSTREAM_URL ||
+      process.env.AI_MEDIA_BACKEND_URL ||
+      ''
+  ).trim()
+}
+
+async function parseBackendBody(response) {
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase()
+  if (contentType.includes('application/json')) {
+    try {
+      return await response.json()
+    } catch {
+      return null
+    }
+  }
+
+  try {
+    return await response.text()
+  } catch {
+    return null
+  }
+}
+
+function normalizeAllowedViews(input, fallbackView) {
+  if (!Array.isArray(input)) return [fallbackView]
+
+  const out = []
+  const seen = new Set()
+  for (const raw of input) {
+    const tag = normalizeViewTag(raw)
+    if (tag === 'unknown') continue
+    if (seen.has(tag)) continue
+    seen.add(tag)
+    out.push(tag)
+  }
+
+  if (out.length > 0) return out
+  return [fallbackView]
 }
 
 module.exports = async function handler(req, res) {
@@ -130,23 +172,139 @@ module.exports = async function handler(req, res) {
   }
 
   const mediaType = String(payload.mediaType || '').trim().toLowerCase()
-  if (mediaType !== 'image' && mediaType !== 'video') {
+  if (!VALID_MEDIA_TYPES.has(mediaType)) {
     return sendJson(res, 400, {
       error: 'mediaType must be image or video.',
       code: 'INVALID_MEDIA_TYPE',
     })
   }
 
-  const outputUrl = mediaType === 'video' ? buildVideoUrl(payload) : buildImageUrl(payload)
+  if (mediaType === 'video' && !parseBooleanEnv(process.env.AI_MEDIA_ENABLE_VIDEO_GENERATION, false)) {
+    return sendJson(res, 503, {
+      error: 'Video generation is temporarily disabled until strict image fidelity is stable.',
+      code: 'VIDEO_GENERATION_DISABLED',
+    })
+  }
+
+  const renderMode = normalizeRenderMode(payload.renderMode)
+  const sourceViewTag = normalizeViewTag(payload.sourceViewTag)
+  const requestedViewTag = normalizeViewTag(payload.requestedViewTag || sourceViewTag)
+  const allowedViews = normalizeAllowedViews(payload.allowedViews, requestedViewTag)
+
+  if (parseBooleanEnv(payload.enforceSourceViewOnly, true) && !allowedViews.includes(requestedViewTag)) {
+    return sendJson(res, 400, {
+      error: `Requested view "${requestedViewTag}" is not in allowed views [${allowedViews.join(', ')}].`,
+      code: 'VIEW_CONSTRAINT_VIOLATION',
+    })
+  }
+
+  const runtimeBackendUrl = resolveRuntimeBackendUrl()
+  if (!runtimeBackendUrl) {
+    return sendJson(res, 503, {
+      error:
+        'Runtime generation backend is not configured. Set AI_MEDIA_RUNTIME_BACKEND_URL (or AI_MEDIA_UPSTREAM_URL) on the provider service.',
+      code: 'RUNTIME_BACKEND_NOT_CONFIGURED',
+      meta: {
+        mode: renderMode,
+        sourceViewTag,
+        requestedViewTag,
+      },
+    })
+  }
+
+  const runtimeToken = String(
+    process.env.AI_MEDIA_RUNTIME_BACKEND_TOKEN || process.env.AI_MEDIA_UPSTREAM_TOKEN || ''
+  ).trim()
+  const runtimeHeaders = {
+    'Content-Type': 'application/json',
+  }
+  if (runtimeToken) {
+    runtimeHeaders.Authorization = `Bearer ${runtimeToken}`
+  }
+
+  const traceId = crypto.randomUUID()
+  const proxyPayload = {
+    ...payload,
+    renderMode,
+    sourceViewTag,
+    requestedViewTag,
+    allowedViews,
+    strictFidelity: true,
+    traceId,
+  }
+
+  let backendResponse
+  try {
+    backendResponse = await fetch(runtimeBackendUrl, {
+      method: 'POST',
+      headers: runtimeHeaders,
+      body: JSON.stringify(proxyPayload),
+    })
+  } catch (error) {
+    return sendJson(res, 503, {
+      error: `Runtime backend request failed: ${String(error?.message || error || 'unknown error')}`,
+      code: 'RUNTIME_BACKEND_UNREACHABLE',
+      meta: {
+        traceId,
+        mode: renderMode,
+        requestedViewTag,
+      },
+    })
+  }
+
+  const backendBody = await parseBackendBody(backendResponse)
+  if (!backendResponse.ok) {
+    const errorMessage =
+      typeof backendBody === 'string'
+        ? backendBody
+        : String(backendBody?.error || `Runtime backend failed with status ${backendResponse.status}`)
+
+    return sendJson(res, 502, {
+      error: errorMessage,
+      code: 'RUNTIME_BACKEND_ERROR',
+      meta: {
+        traceId,
+        mode: renderMode,
+        requestedViewTag,
+        status: backendResponse.status,
+      },
+    })
+  }
+
+  const outputUrl = String(backendBody?.outputUrl || backendBody?.url || '').trim()
+  if (!/^https?:\/\//i.test(outputUrl)) {
+    return sendJson(res, 502, {
+      error: 'Runtime backend returned success without a valid outputUrl.',
+      code: 'RUNTIME_BACKEND_INVALID_RESPONSE',
+      meta: {
+        traceId,
+        mode: renderMode,
+      },
+    })
+  }
+
+  const backendMeta = backendBody?.meta && typeof backendBody.meta === 'object' ? backendBody.meta : {}
+  const responseMode = normalizeRenderMode(backendMeta.mode || backendBody.mode || renderMode)
+  const responseViewTag = normalizeViewTag(
+    backendMeta.viewTag || backendBody.viewTag || requestedViewTag || sourceViewTag
+  )
+  const responseAssetId = String(backendBody?.assetId || '').trim()
 
   return sendJson(res, 200, {
     outputUrl,
-    provider: 'internal_microservice',
-    assetId: `mock_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    provider: String(backendBody?.provider || 'internal_runtime_proxy'),
+    assetId:
+      responseAssetId ||
+      `runtime_${toSafeSeedPart(payload?.cjProductId || 'product')}_${Date.now().toString(36)}`,
     meta: {
-      traceId: crypto.randomUUID(),
-      mode: 'starter_mock_provider',
+      traceId,
+      mode: responseMode,
+      viewTag: responseViewTag,
+      requestedViewTag,
+      sourceViewTag,
+      allowedViews,
       mediaType,
+      backendStatus: backendResponse.status,
     },
   })
 }

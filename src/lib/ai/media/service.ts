@@ -8,14 +8,16 @@ import { recordMetric } from '@/lib/ai/metrics-tracker'
 import { resolveAIMediaCategoryProfile } from './category-profiles'
 import { evaluateAIMediaFidelity } from './fidelity'
 import { assertAIMediaProviderConfigured, generateAIMediaAsset } from './provider'
-import { normalizeMediaRunRequest, selectBestAnchorImage } from './quality-policy'
+import { inferViewTagFromUrl, normalizeMediaRunRequest, selectBestAnchorImage } from './quality-policy'
 import type {
   AIMediaAssetRecord,
   AIMediaColorProgress,
+  AIMediaRenderMode,
   AIMediaRunDetails,
   AIMediaRunRecord,
   AIMediaRunStatus,
   AIMediaType,
+  AIMediaViewTag,
   CreateAIMediaRunRequest,
   CreateAIMediaRunResult,
 } from './types'
@@ -229,6 +231,43 @@ function buildAssetDedupeKey(color: string, mediaType: AIMediaType, url: string)
   const comparableUrl = normalizeComparableUrl(url)
   if (!comparableUrl) return ''
   return `${String(color || '').trim().toLowerCase()}|${mediaType}|${comparableUrl}`
+}
+
+function resolveSourceViewTagForUrl(
+  url: string,
+  sourceViewMap: Record<string, AIMediaViewTag>
+): AIMediaViewTag {
+  const raw = String(url || '').trim()
+  if (!raw) return 'unknown'
+  if (sourceViewMap[raw]) return sourceViewMap[raw]
+
+  const comparable = normalizeComparableUrl(raw)
+  if (comparable) {
+    for (const [mapUrl, tag] of Object.entries(sourceViewMap || {})) {
+      if (normalizeComparableUrl(mapUrl) === comparable) {
+        return tag
+      }
+    }
+  }
+
+  return inferViewTagFromUrl(raw)
+}
+
+function isRenderModeCompatible(expected: AIMediaRenderMode, actual: AIMediaRenderMode): boolean {
+  if (expected === actual) return true
+  return expected === 'pose_aware_model_wear' && actual === 'background_only_preserve_product'
+}
+
+function pickRequestedViewTag(
+  availableViews: AIMediaViewTag[],
+  mediaIndex: number,
+  fallback: AIMediaViewTag
+): AIMediaViewTag {
+  if (!Array.isArray(availableViews) || availableViews.length === 0) {
+    return fallback
+  }
+  const idx = Math.max(0, Math.floor(mediaIndex) - 1) % availableViews.length
+  return availableViews[idx] || fallback
 }
 
 async function ensureProductsBucket(db: SupabaseClient): Promise<void> {
@@ -684,6 +723,21 @@ export async function runMediaJob(jobId: number): Promise<{
     categoryLabel: String(profileInput.categoryLabel || request.categoryLabel || '').trim() || undefined,
     preferredVisualStyle: String(request.preferredVisualStyle || '').trim() || undefined,
     luxuryPresentation: request.luxuryPresentation !== false,
+    renderMode:
+      request.renderMode === 'pose_aware_model_wear' ||
+      request.renderMode === 'background_only_preserve_product'
+        ? request.renderMode
+        : undefined,
+    allowedViews: Array.isArray(request.allowedViews) ? request.allowedViews : undefined,
+    sourceViewMap:
+      request.sourceViewMap && typeof request.sourceViewMap === 'object'
+        ? request.sourceViewMap
+        : undefined,
+    enforceSourceViewOnly: request.enforceSourceViewOnly !== false,
+    faceVisibilityPolicy:
+      request.faceVisibilityPolicy && typeof request.faceVisibilityPolicy === 'object'
+        ? request.faceVisibilityPolicy
+        : undefined,
   })
 
   const profile = resolveAIMediaCategoryProfile({
@@ -729,6 +783,39 @@ export async function runMediaJob(jobId: number): Promise<{
       continue
     }
 
+    const anchorSourceViewTag = resolveSourceViewTagForUrl(anchorImage, normalized.sourceViewMap)
+    const anchorViewForGeneration: AIMediaViewTag =
+      anchorSourceViewTag === 'unknown' ? 'front' : anchorSourceViewTag
+
+    const sourceLockedViews = normalized.allowedViews.filter((view) => view === anchorViewForGeneration)
+    const allowedViewsForColor = normalized.enforceSourceViewOnly
+      ? sourceLockedViews
+      : normalized.allowedViews
+
+    if (normalized.enforceSourceViewOnly && allowedViewsForColor.length === 0) {
+      const reason = `missing_source_view:${color}:${anchorViewForGeneration}`
+      rejectedImages += normalized.quality.imagesPerColor
+      if (normalized.quality.includeVideo) rejectedVideos += 1
+      if (!runErrorText) runErrorText = reason
+
+      await addJobItem(jobId, {
+        status: 'error',
+        step: 'media_color_missing_source_view',
+        cj_product_id: runRow.cj_product_id,
+        result: {
+          color,
+          error: reason,
+          anchorImage,
+          anchorViewTag: anchorSourceViewTag,
+          requestedViews: normalized.allowedViews,
+        },
+      })
+      continue
+    }
+
+    const viewTargetsForColor =
+      allowedViewsForColor.length > 0 ? allowedViewsForColor : [anchorViewForGeneration]
+
     for (let i = 1; i <= normalized.quality.imagesPerColor; i++) {
       const imageLoopJob = await getJob(jobId)
       if (!imageLoopJob?.job || imageLoopJob.job.status === 'canceled') {
@@ -737,6 +824,12 @@ export async function runMediaJob(jobId: number): Promise<{
       }
 
       try {
+        const requestedViewTag = pickRequestedViewTag(
+          viewTargetsForColor,
+          i,
+          anchorViewForGeneration
+        )
+
         const generated = await generateAIMediaAsset({
           mediaType: 'image',
           cjProductId: normalized.cjProductId,
@@ -750,16 +843,54 @@ export async function runMediaJob(jobId: number): Promise<{
           categoryNegativePrompt: profile.negativePromptTemplate,
           preferredVisualStyle: normalized.preferredVisualStyle,
           luxuryPresentation: normalized.luxuryPresentation,
+          renderMode: normalized.renderMode,
+          sourceViewTag: anchorSourceViewTag,
+          requestedViewTag,
+          allowedViews: viewTargetsForColor,
+          enforceSourceViewOnly: normalized.enforceSourceViewOnly,
+          faceVisibilityPolicy: normalized.faceVisibilityPolicy,
         })
 
         const fidelity = evaluateAIMediaFidelity({
           sourceUrl: anchorImage,
           outputUrl: generated.url,
           requiredChecks: normalized.quality.requiredChecks,
+          expectedMode: normalized.renderMode,
+          actualMode: generated.mode,
+          enforceProductPreserveMode: true,
+          expectedViewTag: requestedViewTag,
+          actualViewTag: generated.viewTag,
+          allowedViews: viewTargetsForColor,
+          enforceSourceViewOnly: normalized.enforceSourceViewOnly,
         })
 
         let normalizedFidelity = fidelity
         let rejectionReason: string | null = null
+
+        if (!isRenderModeCompatible(normalized.renderMode, generated.mode)) {
+          rejectionReason =
+            `Provider mode mismatch for color ${color} (#${i}): requested ${normalized.renderMode}, got ${generated.mode}`
+          normalizedFidelity = forceRejectFidelityResult(
+            normalizedFidelity,
+            'render_mode_mismatch',
+            rejectionReason
+          )
+        }
+
+        if (
+          !rejectionReason &&
+          normalized.enforceSourceViewOnly &&
+          generated.viewTag !== 'unknown' &&
+          !viewTargetsForColor.includes(generated.viewTag)
+        ) {
+          rejectionReason =
+            `Provider returned unsupported view ${generated.viewTag} for color ${color} (#${i})`
+          normalizedFidelity = forceRejectFidelityResult(
+            normalizedFidelity,
+            'view_constraint_violation',
+            rejectionReason
+          )
+        }
 
         const detectedOutputMediaType = await detectRemoteMediaType(generated.url)
         if (detectedOutputMediaType === 'video') {
@@ -794,6 +925,10 @@ export async function runMediaJob(jobId: number): Promise<{
         if (!rejectionReason && dedupeKey && approvedAssetKeys.has(dedupeKey)) {
           rejectionReason = `Duplicate generated image URL detected for color ${color} (#${i})`
           normalizedFidelity = forceRejectFidelityResult(normalizedFidelity, 'duplicate_output_url', rejectionReason)
+        }
+
+        if (!normalizedFidelity.strictPass && !rejectionReason) {
+          rejectionReason = normalizedFidelity.summary || `Fidelity checks failed for color ${color} (#${i})`
         }
 
         let storageUrl = generated.url
@@ -863,6 +998,12 @@ export async function runMediaJob(jobId: number): Promise<{
       }
 
       try {
+        const requestedVideoViewTag = pickRequestedViewTag(
+          viewTargetsForColor,
+          1,
+          anchorViewForGeneration
+        )
+
         const generatedVideo = await generateAIMediaAsset({
           mediaType: 'video',
           cjProductId: normalized.cjProductId,
@@ -876,16 +1017,54 @@ export async function runMediaJob(jobId: number): Promise<{
           categoryNegativePrompt: profile.negativePromptTemplate,
           preferredVisualStyle: normalized.preferredVisualStyle,
           luxuryPresentation: normalized.luxuryPresentation,
+          renderMode: normalized.renderMode,
+          sourceViewTag: anchorSourceViewTag,
+          requestedViewTag: requestedVideoViewTag,
+          allowedViews: viewTargetsForColor,
+          enforceSourceViewOnly: normalized.enforceSourceViewOnly,
+          faceVisibilityPolicy: normalized.faceVisibilityPolicy,
         })
 
         const fidelity = evaluateAIMediaFidelity({
           sourceUrl: normalized.sourceVideoUrl || anchorImage,
           outputUrl: generatedVideo.url,
           requiredChecks: normalized.quality.requiredChecks,
+          expectedMode: normalized.renderMode,
+          actualMode: generatedVideo.mode,
+          enforceProductPreserveMode: true,
+          expectedViewTag: requestedVideoViewTag,
+          actualViewTag: generatedVideo.viewTag,
+          allowedViews: viewTargetsForColor,
+          enforceSourceViewOnly: normalized.enforceSourceViewOnly,
         })
 
         let normalizedFidelity = fidelity
         let rejectionReason: string | null = null
+
+        if (!isRenderModeCompatible(normalized.renderMode, generatedVideo.mode)) {
+          rejectionReason =
+            `Provider mode mismatch for video ${color}: requested ${normalized.renderMode}, got ${generatedVideo.mode}`
+          normalizedFidelity = forceRejectFidelityResult(
+            normalizedFidelity,
+            'render_mode_mismatch',
+            rejectionReason
+          )
+        }
+
+        if (
+          !rejectionReason &&
+          normalized.enforceSourceViewOnly &&
+          generatedVideo.viewTag !== 'unknown' &&
+          !viewTargetsForColor.includes(generatedVideo.viewTag)
+        ) {
+          rejectionReason =
+            `Provider returned unsupported video view ${generatedVideo.viewTag} for color ${color}`
+          normalizedFidelity = forceRejectFidelityResult(
+            normalizedFidelity,
+            'view_constraint_violation',
+            rejectionReason
+          )
+        }
 
         const detectedOutputMediaType = await detectRemoteMediaType(generatedVideo.url)
         if (detectedOutputMediaType !== 'video') {
@@ -920,6 +1099,10 @@ export async function runMediaJob(jobId: number): Promise<{
         if (!rejectionReason && dedupeKey && approvedAssetKeys.has(dedupeKey)) {
           rejectionReason = `Duplicate generated video URL detected for color ${color}`
           normalizedFidelity = forceRejectFidelityResult(normalizedFidelity, 'duplicate_output_url', rejectionReason)
+        }
+
+        if (!normalizedFidelity.strictPass && !rejectionReason) {
+          rejectionReason = normalizedFidelity.summary || `Fidelity checks failed for video color ${color}`
         }
 
         let storageUrl = generatedVideo.url

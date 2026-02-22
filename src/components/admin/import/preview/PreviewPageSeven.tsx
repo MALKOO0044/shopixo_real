@@ -38,6 +38,40 @@ type ReadyAssetsGroup = {
 };
 
 const POLL_INTERVAL_MS = 3500;
+const DEFAULT_RENDER_MODE = "background_only_preserve_product" as const;
+
+function inferViewTagFromUrl(url: string): "front" | "back" | "side" | "detail" | "unknown" {
+  const normalized = String(url || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) return "unknown";
+  if (/(^|\s)(back|rear|backside|behind|reverse)(\s|$)/.test(normalized)) return "back";
+  if (/(^|\s)(front|main|primary|hero)(\s|$)/.test(normalized)) return "front";
+  if (/(^|\s)(side|profile|lateral)(\s|$)/.test(normalized)) return "side";
+  if (/(^|\s)(detail|closeup|close|zoom|macro)(\s|$)/.test(normalized)) return "detail";
+  return "unknown";
+}
+
+function buildSourceViewMap(product: PricedProduct): Record<string, "front" | "back" | "side" | "detail" | "unknown"> {
+  const urls = Array.from(
+    new Set([
+      ...(Array.isArray(product.images) ? product.images : []),
+      ...Object.values(product.colorImageMap || {}),
+    ])
+  );
+
+  const out: Record<string, "front" | "back" | "side" | "detail" | "unknown"> = {};
+  for (const raw of urls) {
+    const url = String(raw || "").trim();
+    if (!/^https?:\/\//i.test(url)) continue;
+    out[url] = inferViewTagFromUrl(url);
+  }
+  return out;
+}
 
 function collectTargetColors(product: PricedProduct): string[] {
   const candidates: string[] = [
@@ -145,6 +179,51 @@ export default function PreviewPageSeven({ product, sourceContext }: PreviewPage
     });
   }, [readyAssetsByColor, runDetails?.byColor, targetColors]);
 
+  const runRequest = useMemo(() => {
+    const requestFromDetails = runDetails?.run?.params?.request;
+    if (requestFromDetails && typeof requestFromDetails === "object") return requestFromDetails as Record<string, any>;
+    const requestFromLatest = latestRun?.params?.request;
+    if (requestFromLatest && typeof requestFromLatest === "object") return requestFromLatest as Record<string, any>;
+    return null;
+  }, [latestRun?.params, runDetails?.run?.params]);
+
+  const renderModeLabel =
+    runRequest?.renderMode === "pose_aware_model_wear"
+      ? "Pose-Aware Model Wear"
+      : "Background-Only Product Preserve";
+
+  const readyQualityScores = useMemo(() => {
+    const readyAssets = (runDetails?.assets || []).filter(
+      (asset: AIMediaAssetRecord) => asset.status === "ready"
+    );
+    const scores = readyAssets
+      .map((asset: AIMediaAssetRecord) => Number((asset?.fidelity as Record<string, any> | null)?.overallScore ?? NaN))
+      .filter((value: number) => Number.isFinite(value));
+    if (scores.length === 0) return null;
+    const average = scores.reduce((sum: number, value: number) => sum + value, 0) / scores.length;
+    return Math.round(average * 100);
+  }, [runDetails?.assets]);
+
+  const rejectionReasons = useMemo(() => {
+    if (!Array.isArray(runDetails?.assets)) return [] as Array<{ reason: string; count: number }>;
+    const rejectedAssets = runDetails.assets.filter(
+      (asset: AIMediaAssetRecord) => asset.status === "rejected"
+    );
+    const counts = new Map<string, number>();
+    for (const asset of rejectedAssets) {
+      const fidelity = (asset?.fidelity || {}) as Record<string, any>;
+      const reason =
+        String(fidelity?.summary || "").trim() ||
+        String((fidelity?.rejectionReasons || [])[0] || "").trim() ||
+        "Rejected by fidelity policy";
+      counts.set(reason, (counts.get(reason) || 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 6);
+  }, [runDetails?.assets]);
+
   const loadState = useCallback(
     async (silent = false) => {
       if (!product?.pid) {
@@ -246,6 +325,15 @@ export default function PreviewPageSeven({ product, sourceContext }: PreviewPage
         sourceVideoUrl: product.videoUrl || undefined,
         colorImageMap: product.colorImageMap || undefined,
         categoryLabel: product.categoryName || undefined,
+        renderMode: DEFAULT_RENDER_MODE,
+        includeVideo: false,
+        enforceSourceViewOnly: true,
+        allowedViews: ["front", "back"],
+        sourceViewMap: buildSourceViewMap(product),
+        faceVisibilityPolicy: {
+          upperWear: "half_face_allowed",
+          fullBody: "face_hidden",
+        },
       };
 
       const createRes = await fetch("/api/admin/ai/media/runs", {
@@ -405,6 +493,9 @@ export default function PreviewPageSeven({ product, sourceContext }: PreviewPage
             {(currentRunStatus || "none").toUpperCase()}
           </span>
           {currentRunId && <span className="text-xs text-gray-500">Run #{currentRunId}</span>}
+          <span className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700">
+            {renderModeLabel}
+          </span>
         </div>
 
         <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-gray-600 md:grid-cols-2">
@@ -414,7 +505,31 @@ export default function PreviewPageSeven({ product, sourceContext }: PreviewPage
             Latest ready run: {latestReadyRun ? `#${latestReadyRun.id}` : "none"}
           </p>
           <p>Ready assets: {latestReadyAssets.length}</p>
+          <p>
+            Avg ready quality score: {typeof readyQualityScores === "number" ? `${readyQualityScores}%` : "-"}
+          </p>
+          <p>
+            Source-view lock: {runRequest?.enforceSourceViewOnly === false ? "Off" : "On"}
+          </p>
         </div>
+
+        {rejectionReasons.length > 0 && (
+          <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-amber-800">
+              Top rejection reasons
+            </p>
+            <ul className="space-y-1 text-sm text-amber-800">
+              {rejectionReasons.map((item: { reason: string; count: number }) => (
+                <li key={item.reason} className="flex items-start justify-between gap-3">
+                  <span className="line-clamp-2">{item.reason}</span>
+                  <span className="rounded bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
+                    {item.count}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       <div className="rounded-xl border border-gray-200 bg-white p-5">

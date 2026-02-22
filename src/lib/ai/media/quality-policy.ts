@@ -1,6 +1,10 @@
 import type {
+  AIMediaFaceVisibility,
+  AIMediaFaceVisibilityPolicy,
   AIMediaQualityContract,
+  AIMediaRenderMode,
   AIMediaResolutionPreset,
+  AIMediaViewTag,
   CreateAIMediaRunRequest,
   NormalizedAIMediaRunRequest,
 } from './types';
@@ -8,6 +12,13 @@ import type {
 export const MIN_IMAGES_PER_COLOR = 1;
 export const DEFAULT_IMAGES_PER_COLOR = 4;
 export const MAX_IMAGES_PER_COLOR = 8;
+export const DEFAULT_RENDER_MODE: AIMediaRenderMode = 'background_only_preserve_product';
+
+const DEFAULT_ALLOWED_VIEWS: AIMediaViewTag[] = ['front'];
+const DEFAULT_FACE_VISIBILITY_POLICY: AIMediaFaceVisibilityPolicy = {
+  upperWear: 'half_face_allowed',
+  fullBody: 'face_hidden',
+};
 
 export type AIMediaQualityProfile = 'fast' | 'balanced' | 'premium';
 export const DEFAULT_AI_MEDIA_QUALITY_PROFILE: AIMediaQualityProfile = 'balanced';
@@ -37,6 +48,119 @@ const QUALITY_PROFILE_DEFAULTS: Record<
     resolutionPreset: '4k',
   },
 };
+
+function normalizeViewTag(input: unknown): AIMediaViewTag | undefined {
+  const normalized = String(input || '').trim().toLowerCase();
+  if (normalized === 'front' || normalized === 'back' || normalized === 'side' || normalized === 'detail') {
+    return normalized;
+  }
+  if (normalized === 'unknown') return 'unknown';
+  return undefined;
+}
+
+export function inferViewTagFromUrl(url: string): AIMediaViewTag {
+  const normalized = String(url || '').trim().toLowerCase();
+  if (!normalized) return 'unknown';
+
+  const tokenized = normalized
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!tokenized) return 'unknown';
+
+  if (/(^|\s)(back|rear|backside|behind|reverse)(\s|$)/.test(tokenized)) return 'back';
+  if (/(^|\s)(front|main|primary|hero)(\s|$)/.test(tokenized)) return 'front';
+  if (/(^|\s)(side|profile|lateral)(\s|$)/.test(tokenized)) return 'side';
+  if (/(^|\s)(detail|closeup|close|zoom|macro)(\s|$)/.test(tokenized)) return 'detail';
+
+  return 'unknown';
+}
+
+function cleanSourceViewMap(input: unknown): Record<string, AIMediaViewTag> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const out: Record<string, AIMediaViewTag> = {};
+  for (const [rawUrl, rawTag] of Object.entries(input as Record<string, unknown>)) {
+    const url = String(rawUrl || '').trim();
+    if (!url || !isLikelyHttpUrl(url)) continue;
+    const tag = normalizeViewTag(rawTag);
+    if (!tag) continue;
+    out[url] = tag;
+  }
+  return out;
+}
+
+function deriveSourceViewMap(
+  sourceImages: string[],
+  colorImageMap: Record<string, string>,
+  inputMap: unknown
+): Record<string, AIMediaViewTag> {
+  const merged = {
+    ...cleanSourceViewMap(inputMap),
+  };
+
+  const candidates = [...sourceImages, ...Object.values(colorImageMap)];
+  for (const url of candidates) {
+    const normalizedUrl = String(url || '').trim();
+    if (!normalizedUrl || !isLikelyHttpUrl(normalizedUrl)) continue;
+    if (merged[normalizedUrl]) continue;
+    merged[normalizedUrl] = inferViewTagFromUrl(normalizedUrl);
+  }
+
+  return merged;
+}
+
+function normalizeAllowedViews(
+  input: unknown,
+  sourceViewMap: Record<string, AIMediaViewTag>
+): AIMediaViewTag[] {
+  const seen = new Set<string>();
+  const out: AIMediaViewTag[] = [];
+
+  if (Array.isArray(input)) {
+    for (const raw of input) {
+      const tag = normalizeViewTag(raw);
+      if (!tag || tag === 'unknown') continue;
+      if (seen.has(tag)) continue;
+      seen.add(tag);
+      out.push(tag);
+    }
+  }
+
+  if (out.length > 0) return out;
+
+  for (const tag of Object.values(sourceViewMap)) {
+    if (tag === 'unknown' || seen.has(tag)) continue;
+    seen.add(tag);
+    out.push(tag);
+  }
+
+  return out.length > 0 ? out : [...DEFAULT_ALLOWED_VIEWS];
+}
+
+function normalizeRenderMode(input: unknown): AIMediaRenderMode {
+  const normalized = String(input || '').trim();
+  if (normalized === 'background_only_preserve_product' || normalized === 'pose_aware_model_wear') {
+    return normalized;
+  }
+  return DEFAULT_RENDER_MODE;
+}
+
+function normalizeFaceVisibility(input: unknown, fallback: AIMediaFaceVisibility): AIMediaFaceVisibility {
+  return input === 'half_face_allowed' || input === 'face_hidden' ? input : fallback;
+}
+
+function normalizeFaceVisibilityPolicy(input: unknown): AIMediaFaceVisibilityPolicy {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return { ...DEFAULT_FACE_VISIBILITY_POLICY };
+  }
+
+  const policy = input as Partial<AIMediaFaceVisibilityPolicy>;
+  return {
+    upperWear: normalizeFaceVisibility(policy.upperWear, DEFAULT_FACE_VISIBILITY_POLICY.upperWear),
+    fullBody: normalizeFaceVisibility(policy.fullBody, DEFAULT_FACE_VISIBILITY_POLICY.fullBody),
+  };
+}
 
 export const STRICT_PRODUCT_FIDELITY_RULES: string[] = [
   'Do not change the product color, print, pattern, cut, shape, stitching, hardware, or branding.',
@@ -182,7 +306,7 @@ function normalizeResolutionPreset(
 
 export function buildQualityContract(input: CreateAIMediaRunRequest): AIMediaQualityContract {
   const qualityDefaults = resolveQualityProfileDefaults();
-  const includeVideoDefault = resolveIncludeVideoDefault(qualityDefaults.includeVideo);
+  const includeVideoDefault = resolveIncludeVideoDefault(false);
   const resolutionPreset = normalizeResolutionPreset(
     input.resolutionPreset,
     qualityDefaults.resolutionPreset
@@ -210,6 +334,10 @@ export function buildQualityContract(input: CreateAIMediaRunRequest): AIMediaQua
 export function normalizeMediaRunRequest(input: CreateAIMediaRunRequest): NormalizedAIMediaRunRequest {
   const quality = buildQualityContract(input);
   const targetColors = normalizeTargetColors(input.targetColors);
+  const sourceImages = cleanUrlList(input.sourceImages);
+  const colorImageMap = cleanColorMap(input.colorImageMap);
+  const sourceViewMap = deriveSourceViewMap(sourceImages, colorImageMap, input.sourceViewMap);
+  const allowedViews = normalizeAllowedViews(input.allowedViews, sourceViewMap);
   const queueProductId = Number(input.queueProductId);
   const productId = Number(input.productId);
   const createdBy = input.createdBy ? String(input.createdBy).trim() : undefined;
@@ -228,9 +356,9 @@ export function normalizeMediaRunRequest(input: CreateAIMediaRunRequest): Normal
     cjProductId: String(input.cjProductId).trim(),
     sourceContext: input.sourceContext,
     targetColors,
-    sourceImages: cleanUrlList(input.sourceImages),
+    sourceImages,
     sourceVideoUrl: cleanOptionalUrl(input.sourceVideoUrl),
-    colorImageMap: cleanColorMap(input.colorImageMap),
+    colorImageMap,
     queueProductId: Number.isFinite(queueProductId) && queueProductId > 0 ? queueProductId : undefined,
     productId: Number.isFinite(productId) && productId > 0 ? productId : undefined,
     createdBy: createdBy || undefined,
@@ -240,6 +368,11 @@ export function normalizeMediaRunRequest(input: CreateAIMediaRunRequest): Normal
       ? String(input.preferredVisualStyle).trim()
       : undefined,
     luxuryPresentation: input.luxuryPresentation !== false,
+    renderMode: normalizeRenderMode(input.renderMode),
+    allowedViews,
+    sourceViewMap,
+    enforceSourceViewOnly: input.enforceSourceViewOnly !== false,
+    faceVisibilityPolicy: normalizeFaceVisibilityPolicy(input.faceVisibilityPolicy),
     quality,
   };
 }

@@ -35,6 +35,12 @@ https://ai-media.your-company.com/generate
   "mediaIndex": 1,
   "anchorImageUrl": "https://.../anchor.jpg",
   "sourceVideoUrl": "https://.../source.mp4",
+  "renderMode": "background_only_preserve_product",
+  "sourceViewTag": "front",
+  "requestedViewTag": "front",
+  "allowedViews": ["front", "back"],
+  "enforceSourceViewOnly": true,
+  "faceVisibilityPolicy": "half_face_allowed",
   "prompt": "...strict fidelity prompt...",
   "negativePrompt": "...",
   "width": 2048,
@@ -47,6 +53,8 @@ Notes:
 - `mediaType` is `image` or `video`.
 - `sourceVideoUrl` can be `null`.
 - `prompt` already includes strict product fidelity rules.
+- `renderMode`, `sourceViewTag`, and `requestedViewTag` are required for strict product-preserve compliance.
+- `allowedViews` + `enforceSourceViewOnly=true` enforce source-view locking.
 
 ## 4) Success response contract
 
@@ -93,8 +101,12 @@ Recommended for your scale:
 - `AI_MEDIA_QUALITY_PROFILE=balanced`
 - balanced defaults in Shopixo:
   - 4 images per color
-  - include video by default
+  - video disabled by default during stabilization
   - 2k resolution default
+
+Provider-side defaults:
+- `AI_MEDIA_RUNTIME_BACKEND_URL` **required** (real generation backend)
+- `AI_MEDIA_ENABLE_VIDEO_GENERATION=false` unless your backend can reliably generate per-color videos
 
 ## 7) Reliability knobs already supported by Shopixo
 
@@ -126,9 +138,14 @@ Deploy it as a separate Vercel project:
 3. Set **Root Directory** to `ai-media-provider`
 4. Add env var in the provider project:
    - `AI_MEDIA_INTERNAL_PROVIDER_TOKEN=<your-shared-token>`
+   - `AI_MEDIA_RUNTIME_BACKEND_URL=<your-real-generation-endpoint>`
+   - Optional: `AI_MEDIA_RUNTIME_BACKEND_TOKEN=<runtime-backend-token>`
 5. Deploy and copy provider domain
 6. In your main `shopixo-only` project set:
    - `AI_MEDIA_PROVIDER_URL=https://<provider-domain>/generate`
    - `AI_MEDIA_PROVIDER_TOKEN=<same-shared-token>`
 
 After this, redeploy both projects and retry AI media generation.
+
+If `AI_MEDIA_RUNTIME_BACKEND_URL` is not set, the provider intentionally returns `503` with
+`RUNTIME_BACKEND_NOT_CONFIGURED` to prevent accidental mock/random outputs.

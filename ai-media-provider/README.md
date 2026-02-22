@@ -8,9 +8,15 @@ This folder is a standalone Vercel microservice for `AI_MEDIA_PROVIDER_URL`.
 - Path: `/generate`
 - Auth: `Authorization: Bearer <AI_MEDIA_PROVIDER_TOKEN>`
 
-## Required Environment Variable (provider project)
+## Required Environment Variables (provider project)
 
 - `AI_MEDIA_INTERNAL_PROVIDER_TOKEN` = same token value used by Shopixo as `AI_MEDIA_PROVIDER_TOKEN`
+- `AI_MEDIA_RUNTIME_BACKEND_URL` = your real generation backend endpoint (must return `outputUrl`)
+
+## Optional Environment Variables
+
+- `AI_MEDIA_RUNTIME_BACKEND_TOKEN` = bearer token sent to your runtime backend (if it requires auth)
+- `AI_MEDIA_ENABLE_VIDEO_GENERATION` = `true` to enable video requests (default is disabled)
 
 ## Deploy on Vercel (click-by-click)
 
@@ -22,6 +28,9 @@ This folder is a standalone Vercel microservice for `AI_MEDIA_PROVIDER_URL`.
    - Key: `AI_MEDIA_INTERNAL_PROVIDER_TOKEN`
    - Value: your generated secure token
    - Environment: `Production` (and Preview if needed)
+   - Key: `AI_MEDIA_RUNTIME_BACKEND_URL`
+   - Value: your real backend endpoint URL
+   - Environment: `Production` (and Preview if needed)
 6. Click **Deploy**.
 7. After deploy, copy your provider domain from **Settings** -> **Domains**.
 8. In your `shopixo-only` project, set:
@@ -31,5 +40,6 @@ This folder is a standalone Vercel microservice for `AI_MEDIA_PROVIDER_URL`.
 
 ## Notes
 
-- This starter provider currently returns deterministic public media URLs to unblock integration.
-- Replace generation logic in `api/generate.js` with your real model pipeline when ready.
+- This provider no longer returns mock media. It strictly proxies requests to your runtime backend.
+- If `AI_MEDIA_RUNTIME_BACKEND_URL` is missing or unreachable, it returns `503`.
+- It forwards render/view constraints and returns mode/view metadata for Shopixo fidelity checks.
