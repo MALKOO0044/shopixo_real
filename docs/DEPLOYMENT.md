@@ -141,6 +141,12 @@ AI Media (Option B: separate microservice)
 - `AI_MEDIA_MAX_IMAGES_PER_COLOR` = `4` (optional launch cap)
 - `AI_MEDIA_ENABLE_VIDEO_DEFAULT` = `true` (optional)
 
+If you do not have a provider project yet:
+- Deploy the included `ai-media-provider/` folder as a separate Vercel project.
+- In Vercel project setup, set Root Directory to `ai-media-provider`.
+- Add provider env: `AI_MEDIA_INTERNAL_PROVIDER_TOKEN=<same token value used by AI_MEDIA_PROVIDER_TOKEN>`.
+- After deploy, copy provider domain and set `AI_MEDIA_PROVIDER_URL=https://<provider-domain>/generate` in `shopixo-only`.
+
 Provider contract and integration details:
 - See `docs/AI_MEDIA_PROVIDER_MICROSERVICE.md`
 

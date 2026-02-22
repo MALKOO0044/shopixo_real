@@ -110,3 +110,25 @@ Even if provider succeeds, Shopixo still performs:
 - strict fidelity scoring and rejection flow
 
 So your microservice should prioritize correctness, but the store pipeline still enforces final quality gates.
+
+## 9) Quick bootstrap if you do not have a provider project yet
+
+This repository already includes a starter provider service at:
+
+```text
+ai-media-provider/
+```
+
+Deploy it as a separate Vercel project:
+
+1. Vercel Dashboard -> Add New... -> Project
+2. Import this same GitHub repository
+3. Set **Root Directory** to `ai-media-provider`
+4. Add env var in the provider project:
+   - `AI_MEDIA_INTERNAL_PROVIDER_TOKEN=<your-shared-token>`
+5. Deploy and copy provider domain
+6. In your main `shopixo-only` project set:
+   - `AI_MEDIA_PROVIDER_URL=https://<provider-domain>/generate`
+   - `AI_MEDIA_PROVIDER_TOKEN=<same-shared-token>`
+
+After this, redeploy both projects and retry AI media generation.

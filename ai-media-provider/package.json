@@ -1,0 +1,12 @@
+{
+  "name": "shopixo-ai-media-provider",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Option B AI media provider microservice for Shopixo",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "vercel dev"
+  }
+}
