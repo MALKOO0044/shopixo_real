@@ -12,6 +12,7 @@ import PreviewPageSix from "@/components/admin/import/preview/PreviewPageSix";
 import PreviewPageSeven from "@/components/admin/import/preview/PreviewPageSeven";
 import type { PricedProduct, PricedVariant } from "@/components/admin/import/preview/types";
 import { sarToUsd } from "@/lib/pricing";
+import { inferCjVideoQualityHint } from "@/lib/cj/video";
 
 type Category = {
   categoryId: string;
@@ -112,7 +113,7 @@ export default function ProductDiscoveryPage() {
   // Always use CJPacket Ordinary - no filter option (100% accuracy requirement)
   const shippingMethod = "cjpacket ordinary";
   const [freeShippingOnly, setFreeShippingOnly] = useState(false);
-  const [media, setMedia] = useState("");
+  const [media, setMedia] = useState<"withVideo" | "imagesOnly" | "both">("both");
   
   const [loading, setLoading] = useState(false);
   const [searchProgress, setSearchProgress] = useState("");
@@ -498,6 +499,15 @@ export default function ProductDiscoveryPage() {
     return merged;
   }, [previewProduct]);
 
+  const previewVideoUrl = useMemo(() => {
+    const candidate = typeof previewProduct?.videoUrl === "string" ? previewProduct.videoUrl.trim() : "";
+    return candidate;
+  }, [previewProduct]);
+
+  const previewVideoQualityHint = useMemo(() => {
+    return previewVideoUrl ? inferCjVideoQualityHint(previewVideoUrl) : "unknown";
+  }, [previewVideoUrl]);
+
   const saveBatch = async () => {
     if (selected.size === 0) return;
     
@@ -747,10 +757,22 @@ export default function ProductDiscoveryPage() {
 
   const selectedCategory = categories.find(c => c.categoryId === category);
   
+  const hasDiscoverProductVideo = (product: PricedProduct): boolean => {
+    return typeof product.videoUrl === 'string' && product.videoUrl.trim().length > 0;
+  };
+
+  const hasDiscoverProductImages = (product: PricedProduct): boolean => {
+    return Array.isArray(product.images) && product.images.length > 0;
+  };
+
   // Apply client-side media filter to fetched products
   const displayedProducts = products.filter((p) => {
-    if (media === 'withVideo') return !!(p as any).videoUrl;
-    if (media === 'imagesOnly') return !(p as any).videoUrl;
+    const hasVideo = hasDiscoverProductVideo(p);
+    const hasImages = hasDiscoverProductImages(p);
+
+    if (media === 'withVideo') return hasVideo;
+    if (media === 'imagesOnly') return hasImages && !hasVideo;
+    if (media === 'both') return hasImages && hasVideo;
     return true;
   });
   
@@ -934,7 +956,7 @@ export default function ProductDiscoveryPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-6 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-4">
           <div>
             <label className="block text-sm text-gray-600 mb-2">Min Price (USD)</label>
             <input
@@ -997,6 +1019,19 @@ export default function ProductDiscoveryPage() {
               <option value="4">4+ Stars</option>
               <option value="3.5">3.5+ Stars</option>
               <option value="3">3+ Stars</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm text-gray-600 mb-2">Media Filter</label>
+            <select
+              value={media}
+              onChange={(e) => setMedia(e.target.value as "withVideo" | "imagesOnly" | "both")}
+              className="w-full px-3 py-2 border border-gray-300 rounded"
+            >
+              <option value="withVideo">With video</option>
+              <option value="imagesOnly">Images only</option>
+              <option value="both">Both (video + images)</option>
             </select>
           </div>
           
@@ -1379,8 +1414,36 @@ export default function ProductDiscoveryPage() {
               {previewPage === 2 && (
                 <div className="space-y-4">
                   <div className="flex items-center justify-between mb-4">
-                    <h4 className="font-medium text-gray-900">Product Gallery ({previewGalleryImages.length})</h4>
+                    <h4 className="font-medium text-gray-900">
+                      Product Gallery ({previewGalleryImages.length} images{previewVideoUrl ? " + video" : ""})
+                    </h4>
                   </div>
+
+                  {previewVideoUrl && (
+                    <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
+                      <div className="mb-2 flex items-center justify-between">
+                        <h5 className="text-sm font-medium text-blue-900">Product Video</h5>
+                        <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-800">
+                          {previewVideoQualityHint === '4k'
+                            ? '4K source hint'
+                            : previewVideoQualityHint === 'hd'
+                              ? 'HD source hint'
+                              : previewVideoQualityHint === 'sd'
+                                ? 'SD source hint'
+                                : 'Quality unknown'}
+                        </span>
+                      </div>
+                      <div className="aspect-video overflow-hidden rounded bg-black">
+                        <video
+                          src={previewVideoUrl}
+                          controls
+                          playsInline
+                          preload="metadata"
+                          className="h-full w-full object-contain"
+                        />
+                      </div>
+                    </div>
+                  )}
                   
                   {previewGalleryImages.length > 0 ? (
                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">

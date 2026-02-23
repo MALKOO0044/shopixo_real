@@ -17,6 +17,7 @@ import {
   Filter,
   MoreHorizontal,
   Eye,
+  Play,
 } from "lucide-react";
 import { normalizeDisplayedRating } from "@/lib/rating/engine";
 import { sarToUsd } from "@/lib/pricing";
@@ -48,6 +49,7 @@ type QueueProduct = {
   available_colors?: string[];
   available_sizes?: string[];
   variant_pricing?: any[] | string | null;
+  video_url?: string | null;
 };
 
 function parseQueueVariantPricing(value: QueueProduct["variant_pricing"]): any[] {
@@ -110,6 +112,10 @@ function resolveQueueStoreSku(product: QueueProduct): string {
   if (productCode) return productCode;
 
   return product.cj_product_id || "-";
+}
+
+function hasQueueVideo(product: QueueProduct): boolean {
+  return typeof product.video_url === "string" && product.video_url.trim().length > 0;
 }
 
 type Stats = {
@@ -717,7 +723,7 @@ export default function QueuePage() {
                       />
                     </td>
                     <td className="px-4 py-3">
-                      <div className="w-14 h-14 rounded-lg overflow-hidden bg-gray-100">
+                      <div className="relative w-14 h-14 rounded-lg overflow-hidden bg-gray-100">
                         {product.images[0] ? (
                           <img
                             src={product.images[0]}
@@ -729,10 +735,28 @@ export default function QueuePage() {
                             <Package className="h-6 w-6" />
                           </div>
                         )}
+
+                        {hasQueueVideo(product) && (
+                          <a
+                            href={product.video_url as string}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="absolute bottom-1 left-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white"
+                            title="Open product video"
+                          >
+                            <Play className="h-3 w-3" />
+                          </a>
+                        )}
                       </div>
                     </td>
                     <td className="px-4 py-3">
                       <p className="font-medium text-gray-900 line-clamp-2">{product.name_en}</p>
+                      {hasQueueVideo(product) && (
+                        <span className="inline-flex items-center gap-1 text-[11px] text-blue-700">
+                          <Play className="h-3 w-3" />
+                          Video available
+                        </span>
+                      )}
                       <span className="block font-mono text-xs text-emerald-700" title={displayStoreSku}>
                         Store SKU: {displayStoreSku}
                       </span>
