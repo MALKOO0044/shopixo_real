@@ -25,6 +25,13 @@ Set `AI_MEDIA_PROVIDER_URL` to the full endpoint URL, for example:
 https://ai-media.your-company.com/generate
 ```
 
+Provider now supports two runtime patterns:
+
+1. **External runtime service** (recommended long-term):
+   - `AI_MEDIA_RUNTIME_BACKEND_URL=https://<runtime-domain>/generate`
+2. **Internal bootstrap runtime** (fast start, same provider project):
+   - `AI_MEDIA_RUNTIME_BACKEND_URL=https://<provider-domain>/runtime-generate`
+
 ## 3) Request payload (sent by Shopixo)
 
 ```json
@@ -78,6 +85,11 @@ Shopixo reads:
 - `assetId` (optional)
 - `meta` (optional)
 
+Runtime metadata should include at least:
+- `meta.mode`
+- `meta.viewTag`
+- `meta.traceId`
+
 ## 5) Error response contract
 
 For provider failures, return non-2xx with JSON:
@@ -107,6 +119,8 @@ Recommended for your scale:
 Provider-side defaults:
 - `AI_MEDIA_RUNTIME_BACKEND_URL` **required** (real generation backend)
 - `AI_MEDIA_ENABLE_VIDEO_GENERATION=false` unless your backend can reliably generate per-color videos
+- `AI_MEDIA_RUNTIME_ENABLE_VIDEO=false` for bootstrap runtime image-first rollout
+- `AI_MEDIA_RUNTIME_ASSET_SECRET=<long-random-secret>` to sign runtime asset URLs
 
 ## 7) Reliability knobs already supported by Shopixo
 
@@ -138,7 +152,8 @@ Deploy it as a separate Vercel project:
 3. Set **Root Directory** to `ai-media-provider`
 4. Add env var in the provider project:
    - `AI_MEDIA_INTERNAL_PROVIDER_TOKEN=<your-shared-token>`
-   - `AI_MEDIA_RUNTIME_BACKEND_URL=<your-real-generation-endpoint>`
+   - `AI_MEDIA_RUNTIME_BACKEND_URL=https://<provider-domain>/runtime-generate`
+   - `AI_MEDIA_RUNTIME_ASSET_SECRET=<long-random-secret>`
    - Optional: `AI_MEDIA_RUNTIME_BACKEND_TOKEN=<runtime-backend-token>`
 5. Deploy and copy provider domain
 6. In your main `shopixo-only` project set:
@@ -149,3 +164,18 @@ After this, redeploy both projects and retry AI media generation.
 
 If `AI_MEDIA_RUNTIME_BACKEND_URL` is not set, the provider intentionally returns `503` with
 `RUNTIME_BACKEND_NOT_CONFIGURED` to prevent accidental mock/random outputs.
+
+## 10) Internal bootstrap runtime endpoints (included in `ai-media-provider`)
+
+- `POST /runtime-generate`
+  - Validates media/view payload and returns signed `outputUrl` for runtime assets.
+  - Video is disabled by default (`AI_MEDIA_RUNTIME_ENABLE_VIDEO=false`).
+- `GET|HEAD /runtime-asset/:assetKey`
+  - Signed URL endpoint used by `outputUrl`.
+  - Returns `307` redirect to original source media URL (bootstrap behavior).
+- `GET /health`
+  - Lightweight readiness/config visibility endpoint.
+
+This bootstrap mode is intended for phase-1 runtime activation and contract stabilization.
+For full background compositing/removal and model-wear generation, point
+`AI_MEDIA_RUNTIME_BACKEND_URL` to your dedicated runtime generation server.

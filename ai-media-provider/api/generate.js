@@ -13,6 +13,25 @@ function sendJson(res, statusCode, payload) {
   res.end(JSON.stringify(payload))
 }
 
+function isRecursiveGenerateTarget(req, runtimeBackendUrl) {
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase()
+
+  if (!host || !runtimeBackendUrl) return false
+
+  try {
+    const runtimeUrl = new URL(runtimeBackendUrl)
+    if (runtimeUrl.host.toLowerCase() !== host) return false
+
+    const normalizedPath = runtimeUrl.pathname.replace(/\/+$/, '').toLowerCase() || '/'
+    return normalizedPath === '/generate' || normalizedPath === '/api/generate'
+  } catch {
+    return false
+  }
+}
+
 async function parseRequestBody(req) {
   if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
     return req.body
@@ -98,6 +117,22 @@ function resolveRuntimeBackendUrl() {
       process.env.AI_MEDIA_BACKEND_URL ||
       ''
   ).trim()
+}
+
+function isSameHostRuntimeTarget(req, runtimeBackendUrl) {
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase()
+
+  if (!host || !runtimeBackendUrl) return false
+
+  try {
+    const runtimeUrl = new URL(runtimeBackendUrl)
+    return runtimeUrl.host.toLowerCase() === host
+  } catch {
+    return false
+  }
 }
 
 async function parseBackendBody(response) {
@@ -212,9 +247,24 @@ module.exports = async function handler(req, res) {
     })
   }
 
-  const runtimeToken = String(
+  if (isRecursiveGenerateTarget(req, runtimeBackendUrl)) {
+    return sendJson(res, 503, {
+      error:
+        'Invalid runtime backend URL configuration. AI_MEDIA_RUNTIME_BACKEND_URL must not point to /generate on this same provider service.',
+      code: 'RUNTIME_BACKEND_RECURSIVE_CONFIG',
+      meta: {
+        runtimeBackendUrl,
+      },
+    })
+  }
+
+  const runtimeBackendToken = String(
     process.env.AI_MEDIA_RUNTIME_BACKEND_TOKEN || process.env.AI_MEDIA_UPSTREAM_TOKEN || ''
   ).trim()
+  const internalBootstrapToken = isSameHostRuntimeTarget(req, runtimeBackendUrl)
+    ? String(process.env.AI_MEDIA_INTERNAL_PROVIDER_TOKEN || '').trim()
+    : ''
+  const runtimeToken = runtimeBackendToken || internalBootstrapToken
   const runtimeHeaders = {
     'Content-Type': 'application/json',
   }
