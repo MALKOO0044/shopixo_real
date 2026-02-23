@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { loadToken, saveToken } from '@/lib/integration/token-store';
 import { fetchJson } from '@/lib/http';
 import { getSetting } from '@/lib/settings';
+import { extractCjProductGalleryImages } from '@/lib/cj/image-gallery';
 
 // CJ v2 client with token auth per official docs:
 // - POST /authentication/getAccessToken { apiKey }
@@ -1785,93 +1786,8 @@ export function mapCjItemToProductLike(item: any): CjProductLike | null {
     }
   } catch {}
 
-  // --- Image collection (robust across CJ shapes) ---
-  const imageList: string[] = [];
-  const pushUrl = (val: any) => { if (typeof val === 'string' && val.trim()) imageList.push(val.trim()); };
-  
-  // Handle productImage - may be a JSON string array or regular URL
-  const bigImage = item.productImage || item.bigImage || item.image || item.mainImage || item.mainImageUrl || null;
-  if (typeof bigImage === 'string' && bigImage.trim()) {
-    const s = bigImage.trim();
-    // Check if it's a JSON array string like "[\"url1\", \"url2\"]"
-    if (s.startsWith('[') && s.endsWith(']')) {
-      try { 
-        const parsed = JSON.parse(s); 
-        if (Array.isArray(parsed)) parsed.forEach(pushUrl); 
-      } catch { pushUrl(s); }
-    } else {
-      pushUrl(s);
-    }
-  }
-  
-  // Arrays: strings or objects with common keys - including productImageSet!
-  const arrFields = ['productImageSet', 'imageList', 'productImageList', 'detailImageList', 'pictureList', 'productImages'] as const;
-  for (const key of arrFields) {
-    const arr: any = (item as any)[key];
-    if (Array.isArray(arr)) {
-      for (const it of arr) {
-        if (typeof it === 'string') pushUrl(it);
-        else if (it && typeof it === 'object') pushUrl(it.imageUrl || it.url || it.imgUrl || it.big || it.origin || it.src);
-      }
-    }
-  }
-  // String fields that may contain JSON array or comma-separated URLs
-  const strFields = ['images', 'imageUrls', 'images2'];
-  for (const key of strFields) {
-    const v: any = (item as any)[key];
-    if (typeof v === 'string' && v.trim()) {
-      const s = v.trim();
-      if (s.startsWith('[') && s.endsWith(']')) {
-        try { const parsed = JSON.parse(s); if (Array.isArray(parsed)) parsed.forEach(pushUrl); } catch {}
-      } else if (/[;,|\n\r\t,]+/.test(s)) {
-        s.split(/[;,|\n\r\t,]+/).map((x) => x.trim()).filter(Boolean).forEach(pushUrl);
-      } else { pushUrl(s); }
-    }
-  }
-
-  // Filter out non-product images (badges, icons, flags, logos, placeholders) and small thumbs
-  const deny = /(sprite|icon|favicon|logo|placeholder|blank|loading|alipay|wechat|whatsapp|kefu|service|avatar|thumb|thumbnail|small|tiny|mini|sizechart|size\s*chart|chart|table|guide|tips|hot|badge|flag|promo|banner|sale|discount|qr)/i;
-  function normalizeUrl(u: string): string {
-    try {
-      const url = new URL(u);
-      url.hash = '';
-      return url.toString();
-    } catch { return u; }
-  }
-  function isSmall(u: string): boolean {
-    // match -100x100 etc in filename; treat as small only if BOTH dims are small
-    const m = u.match(/-(\d{2,4})x(\d{2,4})(?=\.)/i);
-    if (m) {
-      const w = Number(m[1]);
-      const h = Number(m[2]);
-      if (Math.max(w, h) < 300) return true;
-    }
-    // query hints like ?w=300 or &h=300: be lenient; only treat as small under 300
-    const qm = u.match(/[?&](?:w|width|h|height)=(\d{2,4})/i);
-    if (qm && Number(qm[1]) < 300) return true;
-    return false;
-  }
-  function normKey(u: string): string {
-    try {
-      const url = new URL(u);
-      const name = url.pathname.split('/').pop() || u;
-      return name.toLowerCase().replace(/-\d{2,4}x\d{2,4}(?=\.)/, '');
-    } catch { return u; }
-  }
-
-  const seen = new Set<string>();
-  const filteredImages: string[] = [];
-  for (const raw of imageList) {
-    if (!raw) continue;
-    const u = normalizeUrl(String(raw));
-    if (deny.test(u)) continue;
-    if (isSmall(u)) continue;
-    const key = normKey(u);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    filteredImages.push(u);
-    if (filteredImages.length >= 30) break;
-  }
+  // --- Image collection (shared deterministic CJ helper) ---
+  const filteredImages: string[] = extractCjProductGalleryImages(item, 30);
 
   // Video detection: some responses may contain videoUrl or list
   let videoUrl: string | null = (item.video || item.videoUrl || null) as string | null;
@@ -2044,21 +1960,6 @@ export function mapCjItemToProductLike(item: any): CjProductLike | null {
         imageUrl: (typeof variantImage === 'string' ? variantImage : undefined) as string | undefined,
       });
 
-      // Opportunistically collect variant images if main set is empty or small
-      if (filteredImages.length < 30) {
-        const vcands = [v.image, v.imageUrl, v.imgUrl, v.whiteImage, v.bigImage];
-        for (const c of vcands) {
-          if (!c || typeof c !== 'string') continue;
-          const u = normalizeUrl(String(c));
-          if (deny.test(u)) continue;
-          if (isSmall(u)) continue;
-          const key = normKey(u);
-          if (seen.has(key)) continue;
-          seen.add(key);
-          filteredImages.push(u);
-          if (filteredImages.length >= 30) break;
-        }
-      }
     }
   }
 

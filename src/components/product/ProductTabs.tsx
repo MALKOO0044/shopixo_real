@@ -8,6 +8,77 @@ import DescriptionGallery from "./DescriptionGallery";
 import SafeHtmlRenderer, { parseProductDescription } from "./SafeHtmlRenderer";
 import { normalizeDisplayedRating } from "@/lib/rating/engine";
 
+const NON_PRODUCT_GALLERY_IMAGE_RE = /(sprite|icon|favicon|logo|placeholder|blank|loading|alipay|wechat|whatsapp|kefu|service|avatar|thumb|thumbnail|small|tiny|mini|sizechart|size\s*chart|chart|table|guide|tips|hot|badge|flag|promo|banner|sale|discount|qr)/i;
+const GALLERY_IMAGE_KEY_SIZE_TOKEN_RE = /[_-](\d{2,4})x(\d{2,4})(?=\.)/gi;
+const PRODUCT_IMAGE_LABEL_RE = /Product\s*Image\s*:?\s*/gi;
+
+function normalizeProductGalleryImageKey(url: string): string {
+  const normalizedUrl = String(url || "").trim().toLowerCase();
+  if (!normalizedUrl) return "";
+
+  try {
+    const parsed = new URL(normalizedUrl);
+    parsed.search = "";
+    parsed.hash = "";
+    parsed.pathname = parsed.pathname.replace(GALLERY_IMAGE_KEY_SIZE_TOKEN_RE, "");
+    return parsed.toString();
+  } catch {
+    return normalizedUrl
+      .replace(/[?#].*$/, "")
+      .replace(GALLERY_IMAGE_KEY_SIZE_TOKEN_RE, "");
+  }
+}
+
+function isValidProductGalleryImageUrl(url: string): boolean {
+  const candidate = String(url || "").trim();
+  if (!/^https?:\/\//i.test(candidate)) return false;
+  if (NON_PRODUCT_GALLERY_IMAGE_RE.test(candidate)) return false;
+  return true;
+}
+
+function extractImagesFromRichHtml(html: string): string[] {
+  if (!html) return [];
+
+  const images: string[] = [];
+  const seen = new Set<string>();
+  const pushImage = (raw: unknown) => {
+    if (typeof raw !== "string") return;
+    const candidate = raw.replace(/&amp;/g, "&").trim();
+    if (!isValidProductGalleryImageUrl(candidate)) return;
+    if (seen.has(candidate)) return;
+    seen.add(candidate);
+    images.push(candidate);
+  };
+
+  const imgTagRegex = /<img[^>]+src=["']([^"']+)["'][^>]*>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = imgTagRegex.exec(html)) !== null) {
+    pushImage(match[1]);
+  }
+
+  const urlRegex = /https?:\/\/[^\s<>"']+\.(?:jpg|jpeg|png|gif|webp|avif|bmp)(?:\?[^\s<>"']*)?/gi;
+  while ((match = urlRegex.exec(html)) !== null) {
+    pushImage(match[0]);
+  }
+
+  return images;
+}
+
+function sanitizeRichSectionHtml(html: string): { html: string; extractedImages: string[] } {
+  const source = String(html || "");
+  if (!source.trim()) return { html: "", extractedImages: [] };
+
+  const extractedImages = extractImagesFromRichHtml(source);
+  const sanitized = source
+    .replace(/<img\b[^>]*>/gi, " ")
+    .replace(PRODUCT_IMAGE_LABEL_RE, " ")
+    .replace(/<([a-z][a-z0-9]*)\b[^>]*>\s*<\/\1>/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  return { html: sanitized, extractedImages };
+}
+
 interface Review {
   id: number;
   author: string;
@@ -74,8 +145,18 @@ export default function ProductTabs({
       { key: "sizeInfo", title: "Size Information", html: sizeInfoHtml },
       { key: "productNote", title: "Product Notes", html: productNoteHtml },
       { key: "packingList", title: "Packing List", html: packingListHtml },
-    ].filter((section) => {
-      const text = String(section.html || "").trim();
+    ].map((section) => {
+      const sanitized = sanitizeRichSectionHtml(section.html);
+      return {
+        ...section,
+        html: sanitized.html,
+        extractedImages: sanitized.extractedImages,
+      };
+    }).filter((section) => {
+      const text = String(section.html || "")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/gi, " ")
+        .trim();
       return text.length > 0;
     });
   }, [overviewHtml, productInfoHtml, sizeInfoHtml, productNoteHtml, packingListHtml]);
@@ -84,7 +165,35 @@ export default function ProductTabs({
     return parseProductDescription(description);
   }, [description]);
 
-  const hasDescriptionImages = parsedDescription.extractedImages.length > 0;
+  const galleryImages = useMemo(() => {
+    const merged: string[] = [];
+    const seen = new Set<string>();
+    const pushImage = (raw: unknown) => {
+      if (typeof raw !== "string") return;
+      const candidate = raw.trim();
+      if (!isValidProductGalleryImageUrl(candidate)) return;
+
+      const key = normalizeProductGalleryImageKey(candidate);
+      if (!key || seen.has(key)) return;
+
+      seen.add(key);
+      merged.push(candidate);
+    };
+
+    for (const imageUrl of parsedDescription.extractedImages) {
+      pushImage(imageUrl);
+    }
+
+    for (const section of richSections) {
+      for (const imageUrl of section.extractedImages) {
+        pushImage(imageUrl);
+      }
+    }
+
+    return merged;
+  }, [parsedDescription.extractedImages, richSections]);
+
+  const hasGalleryImages = galleryImages.length > 0;
 
   const tabs = [
     { id: "overview" as const, label: "Overview" },
@@ -197,14 +306,14 @@ export default function ProductTabs({
             </div>
           ))}
 
-          {hasDescriptionImages && (
+          {hasGalleryImages && (
             <div className="bg-white border rounded-xl p-6">
               <h3 className="font-bold text-lg mb-4 flex items-center gap-2">
                 <ImageIcon className="w-5 h-5 text-gray-600" />
                 Product Gallery
               </h3>
               <DescriptionGallery 
-                images={parsedDescription.extractedImages} 
+                images={galleryImages} 
                 title={productTitle}
               />
             </div>

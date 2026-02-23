@@ -6,12 +6,76 @@ import { computeRating } from '@/lib/rating/engine';
 import { createClient } from '@supabase/supabase-js';
 import { hasTable } from '@/lib/db-features';
 import { computeRetailFromLanded, sarToUsd, usdToSar } from '@/lib/pricing';
+import { extractCjProductGalleryImages, normalizeCjImageKey, prioritizeCjHeroImage } from '@/lib/cj/image-gallery';
 
 function getSupabaseAdmin() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) return null;
   return createClient(url, key);
+}
+
+function normalizeVariantColorToken(value: unknown): string {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function resolveColorImageFromMap(
+  color: string | undefined,
+  colorImageMap: Record<string, string>,
+  fallback?: string
+): string | undefined {
+  if (fallback && typeof fallback === 'string' && fallback.startsWith('http')) return fallback;
+  if (!color || !colorImageMap || Object.keys(colorImageMap).length === 0) return fallback;
+
+  const exact = colorImageMap[color];
+  if (typeof exact === 'string' && exact.startsWith('http')) return exact;
+
+  const target = normalizeVariantColorToken(color);
+  if (!target) return fallback;
+
+  for (const [mapColor, imageUrl] of Object.entries(colorImageMap)) {
+    if (typeof imageUrl !== 'string' || !imageUrl.startsWith('http')) continue;
+    const key = normalizeVariantColorToken(mapColor);
+    if (!key) continue;
+    if (key === target || key.includes(target) || target.includes(key)) {
+      return imageUrl;
+    }
+  }
+
+  return fallback;
+}
+
+function extractVariantColorSize(variant: any, fallbackName?: string): { color?: string; size?: string } {
+  let size = variant?.size || variant?.sizeNameEn || variant?.sizeName || undefined;
+  let color = variant?.color || variant?.colour || variant?.colorNameEn || variant?.colorName || undefined;
+
+  const variantKeyRaw = String(
+    variant?.variantKey || variant?.variantNameEn || variant?.variantName || fallbackName || ''
+  ).replace(/[\u4e00-\u9fff]/g, '').trim();
+
+  if ((!color || !size) && variantKeyRaw.includes('-')) {
+    const parts = variantKeyRaw.split('-').map((p: string) => p.trim()).filter(Boolean);
+    if (parts.length >= 2) {
+      const lastPart = parts[parts.length - 1];
+      const firstPart = parts.slice(0, -1).join('-').trim();
+      const sizePattern = /^(XS|S|M|L|XL|XXL|XXXL|2XL|3XL|4XL|5XL|6XL|One Size|Free Size|\d{2,3})$/i;
+      if (sizePattern.test(lastPart)) {
+        if (!size) size = lastPart;
+        if (!color) color = firstPart;
+      } else if (!color) {
+        color = variantKeyRaw;
+      }
+    }
+  }
+
+  if (!color && !size && variantKeyRaw) {
+    color = variantKeyRaw;
+  }
+
+  return {
+    color: typeof color === 'string' && color.trim() ? color.trim() : undefined,
+    size: typeof size === 'string' && size.trim() ? size.trim() : undefined,
+  };
 }
 
 /**
@@ -191,8 +255,8 @@ export async function GET(
     const listedNum = Number(source.listedNum || 0);
 
     // --- Extract images ---
-    const images = extractAllImages(source);
-    console.log(`[ProductDetails] Extracted ${images.length} images`);
+    let images = extractAllImages(source);
+    console.log(`[ProductDetails] Product ${pid}: ${images.length} images from primary source`);
 
     // --- Extract product info fields ---
     const rawDescriptionHtml = String(source.description || source.productDescription || source.descriptionEn || source.productDescEn || source.desc || '').trim();
@@ -358,9 +422,106 @@ export async function GET(
     const productNote = sanitizeHtml(rawProductNote) || undefined;
 
     // --- Fetch variants ---
-    const base = process.env.CJ_API_BASE || 'https://developers.cjdropshipping.com/api2.0/v1';
     const variants = await getProductVariants(pid);
     console.log(`[ProductDetails] Fetched ${variants.length} variants`);
+
+    // Build set of images from variants (purchasable options) + structured color map.
+    const variantImages: string[] = [];
+    const seenVariantImageKeys = new Set<string>();
+    const pushVariantImage = (url: unknown, preferFront: boolean = false) => {
+      if (typeof url !== 'string') return;
+      const cleaned = url.trim();
+      if (!cleaned.startsWith('http')) return;
+      const key = normalizeCjImageKey(cleaned);
+      if (!key || seenVariantImageKeys.has(key)) return;
+      seenVariantImageKeys.add(key);
+      if (preferFront) variantImages.unshift(cleaned);
+      else variantImages.push(cleaned);
+    };
+
+    const colorImageMap: Record<string, string> = {};
+    const colorPropertyList = source.productPropertyList || source.propertyList || source.productOptions || [];
+    if (Array.isArray(colorPropertyList)) {
+      for (const prop of colorPropertyList) {
+        const propName = String(prop.propertyNameEn || prop.propertyName || prop.name || '').toLowerCase();
+        if (!propName.includes('color') && !propName.includes('colour')) continue;
+
+        const valueList = prop.propertyValueList || prop.values || prop.options || [];
+        if (!Array.isArray(valueList)) continue;
+
+        for (const pv of valueList) {
+          const colorValue = String(
+            pv.propertyValueNameEn || pv.propertyValueName || pv.value || pv.name || ''
+          ).trim();
+          const cleanColor = colorValue.replace(/[\u4e00-\u9fff]/g, '').trim();
+          const colorImg = pv.image || pv.imageUrl || pv.propImage || pv.bigImage || pv.pic || '';
+
+          if (
+            cleanColor
+            && cleanColor.length > 0
+            && cleanColor.length < 50
+            && /[a-zA-Z]/.test(cleanColor)
+            && typeof colorImg === 'string'
+            && colorImg.startsWith('http')
+          ) {
+            const normalizedColorImage = colorImg.trim();
+            colorImageMap[cleanColor] = normalizedColorImage;
+            pushVariantImage(normalizedColorImage);
+          }
+        }
+      }
+    }
+
+    const mainImage = source.productImage || source.image || source.bigImage;
+    pushVariantImage(mainImage, true);
+
+    const variantImageFields = [
+      'variantImage',
+      'whiteImage',
+      'image',
+      'imageUrl',
+      'imgUrl',
+      'bigImage',
+      'variantImg',
+      'skuImage',
+      'pic',
+      'picture',
+      'photo',
+    ];
+
+    for (const variant of variants) {
+      for (const field of variantImageFields) {
+        pushVariantImage(variant[field]);
+      }
+
+      const variantProps = variant.variantPropertyList || variant.propertyList || variant.properties || [];
+      if (Array.isArray(variantProps)) {
+        for (const prop of variantProps) {
+          pushVariantImage(prop?.image || prop?.propImage || prop?.imageUrl || prop?.pic);
+        }
+      }
+    }
+
+    // Deterministic source ordering:
+    // 1) full-details extraction (already hero-ranked), 2) color map, 3) variant media.
+    const allImages: string[] = [];
+    const finalSeenImageKeys = new Set<string>();
+    const pushFinalImage = (url: unknown) => {
+      if (typeof url !== 'string') return;
+      const cleaned = url.trim();
+      if (!cleaned.startsWith('http')) return;
+      const key = normalizeCjImageKey(cleaned);
+      if (!key || finalSeenImageKeys.has(key)) return;
+      finalSeenImageKeys.add(key);
+      allImages.push(cleaned);
+    };
+
+    for (const img of images) pushFinalImage(img);
+    for (const colorImg of Object.values(colorImageMap)) pushFinalImage(colorImg);
+    for (const img of variantImages) pushFinalImage(img);
+
+    images = prioritizeCjHeroImage(allImages).slice(0, 50);
+    console.log(`[ProductDetails] Product ${pid}: Final ${images.length} images (deterministic merge)`);
 
     // Extract colors, sizes, models from variants
     const colors = new Set<string>();
@@ -463,9 +624,12 @@ export async function GET(
       const costSAR = usdToSar(variantPriceUSD);
       
       const variantName = String(variant.variantNameEn || variant.variantName || '').replace(/[\u4e00-\u9fff]/g, '').trim() || undefined;
-      const variantImage = variant.variantImage || variant.whiteImage || variant.image || undefined;
-      const size = variant.size || variant.sizeNameEn || undefined;
-      const color = variant.color || variant.colorNameEn || undefined;
+      const { size, color } = extractVariantColorSize(variant, variantName);
+      const variantImage = resolveColorImageFromMap(
+        color,
+        colorImageMap,
+        variant.variantImage || variant.whiteImage || variant.image || undefined
+      );
 
       let shippingPriceUSD = 0;
       let shippingPriceSAR = 0;
@@ -699,6 +863,7 @@ export async function GET(
       availableSizes: extractedSizes.length > 0 ? extractedSizes : undefined,
       availableColors: extractedColors.length > 0 ? extractedColors : undefined,
       availableModels: extractedModels.length > 0 ? extractedModels : undefined,
+      colorImageMap: Object.keys(colorImageMap).length > 0 ? colorImageMap : undefined,
     };
 
     const duration = Date.now() - startTime;
@@ -719,66 +884,6 @@ export async function GET(
   }
 }
 
-// Image extraction helper (simplified from search-and-price)
 function extractAllImages(item: any): string[] {
-  const imageList: string[] = [];
-  const seenUrls = new Set<string>();
-
-  const pushUrl = (url: any) => {
-    if (!url || typeof url !== 'string') return;
-    const cleaned = url.trim();
-    if (!cleaned.startsWith('http')) return;
-    if (seenUrls.has(cleaned)) return;
-    seenUrls.add(cleaned);
-    imageList.push(cleaned);
-  };
-
-  // Direct image fields
-  const directFields = ['productImage', 'bigImage', 'productImageSet', 'imageUrl', 'image', 'mainImage', 'whiteImage', 'skuImage'];
-  for (const field of directFields) {
-    const val = item[field];
-    if (typeof val === 'string') {
-      if (val.startsWith('[')) {
-        try {
-          const arr = JSON.parse(val);
-          if (Array.isArray(arr)) arr.forEach(u => pushUrl(u));
-        } catch {
-          pushUrl(val);
-        }
-      } else {
-        pushUrl(val);
-      }
-    } else if (Array.isArray(val)) {
-      val.forEach(u => typeof u === 'string' ? pushUrl(u) : pushUrl(u?.imageUrl || u?.url));
-    }
-  }
-
-  // Array fields
-  const arrFields = ['imageList', 'productImageList', 'detailImageList', 'variantImageList'];
-  for (const key of arrFields) {
-    const arr = item[key];
-    if (Array.isArray(arr)) {
-      for (const it of arr) {
-        if (typeof it === 'string') pushUrl(it);
-        else if (it && typeof it === 'object') {
-          pushUrl(it.imageUrl || it.url || it.imgUrl || it.big || it.origin || it.src);
-        }
-      }
-    }
-  }
-
-  // Variant images
-  const variantList = item.variantList || item.skuList || item.variants || [];
-  if (Array.isArray(variantList)) {
-    for (const v of variantList) {
-      pushUrl(v?.whiteImage);
-      pushUrl(v?.image);
-      pushUrl(v?.variantImage);
-      pushUrl(v?.attributeImage);
-    }
-  }
-
-  // Filter out badges/icons
-  const deny = /(sprite|icon|favicon|logo|placeholder|blank|loading|alipay|wechat|badge|flag|promo|banner|sale|discount|qr)/i;
-  return imageList.filter(url => !deny.test(url)).slice(0, 50);
+  return extractCjProductGalleryImages(item, 50);
 }

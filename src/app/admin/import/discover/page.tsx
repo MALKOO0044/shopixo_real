@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 import type { Route } from "next";
 import { Package, Loader2, CheckCircle, Star, Trash2, Eye, X, Play, TrendingUp, ChevronLeft, ChevronRight, Image as ImageIcon, BarChart3, DollarSign, Grid3X3, FileText, Truck, Sparkles } from "lucide-react";
@@ -41,6 +41,61 @@ type SelectedFeature = {
   supabaseCategoryId: number;
   supabaseCategorySlug: string;
 };
+
+const DISCOVER_NON_PRODUCT_IMAGE_RE = /(sprite|icon|favicon|logo|placeholder|blank|loading|badge|flag|promo|banner|sale|discount|qr|sizechart|size\s*chart|chart|table|guide|thumb|thumbnail|small|tiny|mini)/i;
+const DISCOVER_IMAGE_KEY_SIZE_TOKEN_RE = /[_-](\d{2,4})x(\d{2,4})(?=\.)/gi;
+
+function normalizeDiscoverGalleryImageKey(url: string): string {
+  const normalizedUrl = String(url || '').trim().toLowerCase();
+  if (!normalizedUrl) return '';
+
+  try {
+    const parsed = new URL(normalizedUrl);
+    parsed.search = '';
+    parsed.hash = '';
+    parsed.pathname = parsed.pathname.replace(DISCOVER_IMAGE_KEY_SIZE_TOKEN_RE, '');
+    return parsed.toString();
+  } catch {
+    return normalizedUrl
+      .replace(/[?#].*$/, '')
+      .replace(DISCOVER_IMAGE_KEY_SIZE_TOKEN_RE, '');
+  }
+}
+
+function isValidDiscoverGalleryImageUrl(url: string): boolean {
+  const candidate = String(url || '').trim();
+  if (!/^https?:\/\//i.test(candidate)) return false;
+  if (DISCOVER_NON_PRODUCT_IMAGE_RE.test(candidate)) return false;
+  return true;
+}
+
+function extractDiscoverDescriptionImages(html: string): string[] {
+  if (!html) return [];
+
+  const results: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw: unknown) => {
+    if (typeof raw !== 'string') return;
+    const candidate = raw.replace(/&amp;/g, '&').trim();
+    if (!isValidDiscoverGalleryImageUrl(candidate)) return;
+    if (seen.has(candidate)) return;
+    seen.add(candidate);
+    results.push(candidate);
+  };
+
+  const imgTagRegex = /<img[^>]+src=["']([^"']+)["'][^>]*>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = imgTagRegex.exec(html)) !== null) {
+    push(match[1]);
+  }
+
+  const urlRegex = /https?:\/\/[^\s<>"']+\.(?:jpg|jpeg|png|gif|webp|avif|bmp)(?:\?[^\s<>"']*)?/gi;
+  while ((match = urlRegex.exec(html)) !== null) {
+    push(match[0]);
+  }
+
+  return results;
+}
 
 export default function ProductDiscoveryPage() {
   const [category, setCategory] = useState("all");
@@ -391,7 +446,7 @@ export default function ProductDiscoveryPage() {
   const getPageTitle = (page: number) => {
     switch (page) {
       case 1: return "Overview";
-      case 2: return "Image Gallery";
+      case 2: return "Product Gallery";
       case 3: return "Specifications";
       case 4: return "Stock & Popularity";
       case 5: return "Shipping & Delivery";
@@ -413,6 +468,35 @@ export default function ProductDiscoveryPage() {
       default: return null;
     }
   };
+
+  const previewGalleryImages = useMemo(() => {
+    if (!previewProduct) return [];
+
+    const merged: string[] = [];
+    const seen = new Set<string>();
+    const pushImage = (raw: unknown) => {
+      if (typeof raw !== 'string') return;
+      const candidate = raw.trim();
+      if (!isValidDiscoverGalleryImageUrl(candidate)) return;
+
+      const key = normalizeDiscoverGalleryImageKey(candidate);
+      if (!key || seen.has(key)) return;
+
+      seen.add(key);
+      merged.push(candidate);
+    };
+
+    for (const imageUrl of previewProduct.images || []) {
+      pushImage(imageUrl);
+    }
+
+    const descriptionImages = extractDiscoverDescriptionImages(String(previewProduct.description || ''));
+    for (const imageUrl of descriptionImages) {
+      pushImage(imageUrl);
+    }
+
+    return merged;
+  }, [previewProduct]);
 
   const saveBatch = async () => {
     if (selected.size === 0) return;
@@ -1291,16 +1375,16 @@ export default function ProductDiscoveryPage() {
                 <PreviewPageOne product={previewProduct} />
               )}
               
-              {/* Page 2: Image Gallery */}
+              {/* Page 2: Product Gallery */}
               {previewPage === 2 && (
                 <div className="space-y-4">
                   <div className="flex items-center justify-between mb-4">
-                    <h4 className="font-medium text-gray-900">All Product Images ({previewProduct.images?.length || 0})</h4>
+                    <h4 className="font-medium text-gray-900">Product Gallery ({previewGalleryImages.length})</h4>
                   </div>
                   
-                  {previewProduct.images && previewProduct.images.length > 0 ? (
+                  {previewGalleryImages.length > 0 ? (
                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                      {previewProduct.images.map((img, index) => (
+                      {previewGalleryImages.map((img, index) => (
                         <div key={index} className="relative aspect-square bg-gray-100 rounded-lg overflow-hidden group">
                           <img 
                             src={img} 

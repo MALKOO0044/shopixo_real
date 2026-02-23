@@ -5,6 +5,7 @@ import { hasColumn, hasTable } from "@/lib/db-features";
 import { linkProductToMultipleCategories } from "@/lib/category-intelligence";
 import { computeRating, normalizeDisplayedRating } from "@/lib/rating/engine";
 import { sarToUsd } from "@/lib/pricing";
+import { normalizeCjImageKey, prioritizeCjHeroImage } from "@/lib/cj/image-gallery";
 
 // Helper to find category by name/slug/CJ-link and link product to category hierarchy
 async function linkProductToCategory(admin: any, productId: number, categoryName: string, cjCategoryId?: string, supabaseCategoryId?: number): Promise<boolean> {
@@ -182,6 +183,8 @@ const DEFAULT_SHIPPING_USD = 5;
 const DEFAULT_PAYMENT_FEE_PERCENT = 2.9;
 const DEFAULT_MARGIN_PERCENT = 40;
 const DEFAULT_MIN_PROFIT_USD = 10;
+const IMPORT_NON_PRODUCT_IMAGE_RE = /(sprite|icon|favicon|logo|placeholder|blank|loading|alipay|wechat|whatsapp|kefu|service|avatar|thumb|thumbnail|small|tiny|mini|sizechart|size\s*chart|chart|table|guide|tips|hot|badge|flag|promo|banner|sale|discount|qr)/i;
+const IMPORT_INLINE_SIZE_TOKEN_RE = /[_-](\d{2,4})x(\d{2,4})(?=(?:\.|[_?&#]))/i;
 
 async function calculateRetailPrice(costUsd: number, shippingUsd: number | null, category: string, admin: any): Promise<{
   retailSar: number;
@@ -351,6 +354,72 @@ function parseStringArrayOrNull(value: unknown): string[] | null {
 function parseArrayOrEmpty(value: unknown): any[] {
   const parsed = parseJsonMaybe(value);
   return Array.isArray(parsed) ? parsed : [];
+}
+
+function isLikelyTinyImportImage(url: string): boolean {
+  const sizeToken = url.match(IMPORT_INLINE_SIZE_TOKEN_RE);
+  if (sizeToken) {
+    const width = Number(sizeToken[1]);
+    const height = Number(sizeToken[2]);
+    if (Number.isFinite(width) && Number.isFinite(height) && Math.max(width, height) < 320) {
+      return true;
+    }
+  }
+
+  const querySizes = Array.from(url.matchAll(/[?&](?:w|width|h|height)=(\d{2,4})/gi))
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value));
+  if (querySizes.length > 0 && Math.max(...querySizes) < 320) {
+    return true;
+  }
+
+  return false;
+}
+
+function sanitizeImportProductImages(candidates: unknown[], maxImages: number = 50): string[] {
+  const normalizedCandidates: string[] = [];
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') continue;
+    const cleaned = candidate.trim();
+    if (!cleaned) continue;
+
+    try {
+      const parsed = new URL(cleaned);
+      parsed.hash = '';
+      normalizedCandidates.push(parsed.toString());
+    } catch {
+      normalizedCandidates.push(cleaned);
+    }
+  }
+
+  const buildFiltered = (skipTinyFilter: boolean): string[] => {
+    const filtered: string[] = [];
+    const seen = new Set<string>();
+
+    for (const candidate of normalizedCandidates) {
+      if (!/^https?:\/\//i.test(candidate)) continue;
+      if (IMPORT_NON_PRODUCT_IMAGE_RE.test(candidate)) continue;
+      if (!skipTinyFilter && isLikelyTinyImportImage(candidate)) continue;
+
+      const key = normalizeCjImageKey(candidate);
+      if (!key || seen.has(key)) continue;
+
+      seen.add(key);
+      filtered.push(candidate);
+      if (filtered.length >= maxImages) break;
+    }
+
+    return filtered;
+  };
+
+  const strictFiltered = buildFiltered(false);
+  if (strictFiltered.length > 0) {
+    return prioritizeCjHeroImage(strictFiltered).slice(0, maxImages);
+  }
+
+  const fallbackFiltered = buildFiltered(true);
+  return prioritizeCjHeroImage(fallbackFiltered).slice(0, maxImages);
 }
 
 function parseObjectOrEmpty(value: unknown): Record<string, any> {
@@ -635,6 +704,28 @@ export async function POST(req: NextRequest) {
 
         const totalStock: number | null = qp.stock_total ?? null;
         const rawImages = parseArrayOrEmpty(qp.images);
+        const queueImageCandidates: unknown[] = [
+          ...rawImages,
+          ...Object.values(alignedColorImageMap),
+          ...rawVariants.flatMap((variant: any) => [
+            variant?.variantImage,
+            variant?.whiteImage,
+            variant?.image,
+            variant?.imageUrl,
+            variant?.imgUrl,
+          ]),
+          ...variants.flatMap((variant: any) => [
+            variant?.image_url,
+          ]),
+        ];
+        const normalizedImages = sanitizeImportProductImages(queueImageCandidates, 50);
+        const fallbackRawHttpImages = rawImages
+          .filter((img): img is string => typeof img === 'string' && /^https?:\/\//i.test(img))
+          .slice(0, 50);
+        const finalImages = normalizedImages.length > 0 ? normalizedImages : fallbackRawHttpImages;
+        if (finalImages.length === 0) {
+          console.warn(`[Import] Product ${qp.cj_product_id}: no valid product gallery images found in queue payload`);
+        }
         const baseSlug = queueStoreSku || await ensureUniqueSlug(admin, qp.name_en);
 
         const variantPricesSar = variants
@@ -655,7 +746,7 @@ export async function POST(req: NextRequest) {
           throw new Error('Unable to resolve a positive retail price from approved queue data');
         }
 
-        const imgCount = Array.isArray(rawImages) ? rawImages.length : 0;
+        const imgCount = finalImages.length;
         const minCostUsd = Number(qp.cj_product_cost || qp.cj_price_usd || 0);
         const imgNorm = Math.max(0, Math.min(1, imgCount / 15));
         const priceNorm = Math.max(0, Math.min(1, minCostUsd / 50));
@@ -691,7 +782,7 @@ export async function POST(req: NextRequest) {
           size_info: qp.size_info ?? null,
           product_note: qp.product_note ?? null,
           packing_list: qp.packing_list ?? null,
-          images: rawImages,
+          images: finalImages,
           video_url: qp.video_url || null,
           has_video: typeof qp.has_video === 'boolean' ? qp.has_video : (qp.video_url ? true : null),
           product_code: qp.product_code || null,

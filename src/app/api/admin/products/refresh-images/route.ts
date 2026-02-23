@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { ensureAdmin } from '@/lib/auth/admin-guard';
 import { fetchProductDetailsByPid, getAccessToken } from '@/lib/cj/v2';
 import { fetchJson } from '@/lib/http';
+import { extractCjProductGalleryImages } from '@/lib/cj/image-gallery';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -15,138 +16,7 @@ function getSupabaseAdmin() {
 }
 
 function extractAllImages(item: any): string[] {
-  if (!item) return [];
-  
-  const imageList: string[] = [];
-  const seen = new Set<string>();
-  
-  const pushUrl = (val: any) => {
-    if (typeof val === 'string' && val.trim()) {
-      const url = val.trim();
-      if (!seen.has(url)) {
-        seen.add(url);
-        imageList.push(url);
-      }
-    }
-  };
-  
-  const mainFields = ['productImage', 'bigImage', 'image', 'mainImage', 'mainImageUrl'];
-  for (const field of mainFields) {
-    pushUrl(item[field]);
-  }
-  
-  const arrFields = ['imageList', 'productImageList', 'detailImageList', 'pictureList', 'productImages'];
-  for (const key of arrFields) {
-    const arr = item[key];
-    if (Array.isArray(arr)) {
-      for (const it of arr) {
-        if (typeof it === 'string') pushUrl(it);
-        else if (it && typeof it === 'object') {
-          pushUrl(it.imageUrl || it.url || it.imgUrl || it.big || it.origin || it.src);
-        }
-      }
-    }
-  }
-  
-  // Extract color images from productPropertyList (CJ color options)
-  const propertyList = item.productPropertyList || item.propertyList || item.productOptions || [];
-  if (Array.isArray(propertyList)) {
-    for (const prop of propertyList) {
-      pushUrl(prop?.image || prop?.imageUrl || prop?.propImage || prop?.optionImage);
-      
-      const propValues = prop?.propertyValueList || prop?.values || prop?.options || [];
-      if (Array.isArray(propValues)) {
-        for (const pv of propValues) {
-          pushUrl(pv?.image || pv?.imageUrl || pv?.propImage || pv?.bigImage);
-        }
-      }
-    }
-  }
-  
-  // Variants - comprehensive extraction including color images
-  const variantList = item.variantList || item.skuList || item.variants || [];
-  if (Array.isArray(variantList)) {
-    for (const v of variantList) {
-      pushUrl(v?.whiteImage || v?.image || v?.imageUrl || v?.imgUrl);
-      pushUrl(v?.variantImage || v?.attributeImage || v?.skuImage);
-      pushUrl(v?.bigImage || v?.originImage || v?.mainImage);
-      
-      const variantImages = v?.variantImageList || v?.skuImageList || v?.imageList || [];
-      if (Array.isArray(variantImages)) {
-        for (const vi of variantImages) {
-          if (typeof vi === 'string') pushUrl(vi);
-          else if (vi && typeof vi === 'object') {
-            pushUrl(vi.image || vi.big || vi.small || vi.url || vi.imageUrl);
-          }
-        }
-      }
-      
-      const variantProps = v?.variantPropertyList || v?.propertyList || [];
-      if (Array.isArray(variantProps)) {
-        for (const vp of variantProps) {
-          pushUrl(vp?.image || vp?.propImage || vp?.imageUrl);
-        }
-      }
-    }
-  }
-  
-  const deny = /(sprite|icon|favicon|logo|placeholder|blank|loading|alipay|wechat|whatsapp|kefu|service|avatar|thumb|thumbnail|small|tiny|mini|sizechart|size\s*chart|chart|table|guide|tips|hot|badge|flag|promo|banner|sale|discount|qr)/i;
-  
-  return imageList.filter(url => !deny.test(url)).slice(0, 50);
-}
-
-function removeDuplicateImages(images: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  
-  for (const img of images) {
-    const normalized = img.toLowerCase()
-      .replace(/\?.*$/, '')
-      .replace(/_\d+x\d+/, '')
-      .replace(/-\d+x\d+/, '');
-    
-    if (!seen.has(normalized)) {
-      seen.add(normalized);
-      result.push(img);
-    }
-  }
-  
-  return result;
-}
-
-function scoreImageQuality(url: string): number {
-  let score = 50;
-  
-  const lowerUrl = url.toLowerCase();
-  
-  if (lowerUrl.includes('_800') || lowerUrl.includes('800x')) score += 20;
-  else if (lowerUrl.includes('_600') || lowerUrl.includes('600x')) score += 15;
-  else if (lowerUrl.includes('_400') || lowerUrl.includes('400x')) score += 10;
-  
-  if (lowerUrl.includes('/original/') || lowerUrl.includes('/big/')) score += 15;
-  
-  if (lowerUrl.includes('model') || lowerUrl.includes('lifestyle')) score += 10;
-  
-  if (lowerUrl.includes('detail') || lowerUrl.includes('close')) score -= 5;
-  
-  return score;
-}
-
-function selectBestHeroImage(images: string[]): string[] {
-  if (images.length <= 1) return images;
-  
-  const scored = images.map((url, index) => ({
-    url,
-    originalIndex: index,
-    score: scoreImageQuality(url) - (index * 0.5)
-  }));
-  
-  scored.sort((a, b) => b.score - a.score);
-  
-  const bestUrl = scored[0].url;
-  const result = [bestUrl, ...images.filter(url => url !== bestUrl)];
-  
-  return result;
+  return extractCjProductGalleryImages(item, 50);
 }
 
 async function fetchProductFromCj(cjProductId: string): Promise<any | null> {
@@ -224,11 +94,7 @@ async function refreshProductImages(
     };
   }
   
-  let allImages = extractAllImages(cjDetails);
-  
-  allImages = removeDuplicateImages(allImages);
-  
-  allImages = selectBestHeroImage(allImages);
+  const allImages = extractAllImages(cjDetails);
   
   if (allImages.length === 0) {
     return { 

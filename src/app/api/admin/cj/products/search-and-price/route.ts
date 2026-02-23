@@ -5,6 +5,7 @@ import { fetchJson } from '@/lib/http';
 import { loggerForRequest } from '@/lib/log';
 import { usdToSar, sarToUsd, computeRetailFromLanded } from '@/lib/pricing';
 import { computeRating } from '@/lib/rating/engine';
+import { extractCjProductGalleryImages, normalizeCjImageKey, prioritizeCjHeroImage } from '@/lib/cj/image-gallery';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -328,134 +329,7 @@ function extractVariantColorSize(variant: any, fallbackName?: string): { color?:
 }
 
 function extractAllImages(item: any): string[] {
-  if (!item) return [];
-  
-  const imageList: string[] = [];
-  const seen = new Set<string>();
-  
-  const pushUrl = (val: any, source?: string) => {
-    if (typeof val === 'string' && val.trim()) {
-      const url = val.trim();
-      // Must look like a valid image URL
-      if (url.startsWith('http') && !seen.has(url)) {
-        seen.add(url);
-        imageList.push(url);
-      }
-    }
-  };
-  
-  // Main image fields
-  const mainFields = ['productImage', 'bigImage', 'image', 'mainImage', 'mainImageUrl'];
-  for (const field of mainFields) {
-    pushUrl(item[field], `main.${field}`);
-  }
-  
-  // Array fields containing images
-  const arrFields = ['imageList', 'productImageList', 'detailImageList', 'pictureList', 'productImages'];
-  for (const key of arrFields) {
-    const arr = item[key];
-    if (Array.isArray(arr)) {
-      for (const it of arr) {
-        if (typeof it === 'string') pushUrl(it, `arr.${key}`);
-        else if (it && typeof it === 'object') {
-          pushUrl(it.imageUrl || it.url || it.imgUrl || it.big || it.origin || it.src, `arr.${key}.obj`);
-        }
-      }
-    }
-  }
-  
-  // Extract color images from productPropertyList (CJ color options)
-  const propertyList = item.productPropertyList || item.propertyList || item.productOptions || [];
-  if (Array.isArray(propertyList)) {
-    for (const prop of propertyList) {
-      // Each property may have an image (e.g., color swatch with product image)
-      pushUrl(prop?.image || prop?.imageUrl || prop?.propImage || prop?.optionImage, 'prop');
-      
-      // Property values may also have images
-      const propValues = prop?.propertyValueList || prop?.values || prop?.options || [];
-      if (Array.isArray(propValues)) {
-        for (const pv of propValues) {
-          pushUrl(pv?.image || pv?.imageUrl || pv?.propImage || pv?.bigImage, 'propValue');
-        }
-      }
-    }
-  }
-  
-  // Variants may have images too - comprehensive extraction
-  const variantList = item.variantList || item.skuList || item.variants || [];
-  if (Array.isArray(variantList)) {
-    for (const v of variantList) {
-      // Standard variant image fields
-      pushUrl(v?.whiteImage, 'variant.whiteImage');
-      pushUrl(v?.image, 'variant.image');
-      pushUrl(v?.imageUrl, 'variant.imageUrl');
-      pushUrl(v?.imgUrl, 'variant.imgUrl');
-      pushUrl(v?.variantImage, 'variant.variantImage');
-      pushUrl(v?.attributeImage, 'variant.attributeImage');
-      pushUrl(v?.skuImage, 'variant.skuImage');
-      pushUrl(v?.bigImage, 'variant.bigImage');
-      pushUrl(v?.originImage, 'variant.originImage');
-      pushUrl(v?.mainImage, 'variant.mainImage');
-      
-      // Variant image list/array
-      const variantImages = v?.variantImageList || v?.skuImageList || v?.imageList || [];
-      if (Array.isArray(variantImages)) {
-        for (const vi of variantImages) {
-          if (typeof vi === 'string') pushUrl(vi, 'variantArr');
-          else if (vi && typeof vi === 'object') {
-            pushUrl(vi.image || vi.big || vi.small || vi.url || vi.imageUrl, 'variantArr.obj');
-          }
-        }
-      }
-      
-      // Variant properties with images (color-specific images)
-      const variantProps = v?.variantPropertyList || v?.propertyList || [];
-      if (Array.isArray(variantProps)) {
-        for (const vp of variantProps) {
-          pushUrl(vp?.image || vp?.propImage || vp?.imageUrl, 'variantProp');
-        }
-      }
-    }
-  }
-  
-  // Deep scan: look for any URL-like strings in the entire object
-  // This catches any image fields we might have missed
-  const deepScan = (obj: any, depth: number = 0) => {
-    if (depth > 3 || !obj || typeof obj !== 'object') return;
-    
-    for (const key of Object.keys(obj)) {
-      const val = obj[key];
-      // Look for keys that contain 'image' or 'img' or 'photo' or 'pic'
-      if (/image|img|photo|pic/i.test(key)) {
-        if (typeof val === 'string') {
-          pushUrl(val, `deep.${key}`);
-        } else if (Array.isArray(val)) {
-          for (const v of val) {
-            if (typeof v === 'string') pushUrl(v, `deep.${key}[]`);
-            else if (v && typeof v === 'object') {
-              pushUrl(v.url || v.src || v.imageUrl || v.image, `deep.${key}[].obj`);
-            }
-          }
-        }
-      } else if (Array.isArray(val)) {
-        for (const v of val) {
-          deepScan(v, depth + 1);
-        }
-      } else if (typeof val === 'object') {
-        deepScan(val, depth + 1);
-      }
-    }
-  };
-  
-  deepScan(item);
-  
-  // Filter out non-product images (badges, icons, etc.)
-  const deny = /(sprite|icon|favicon|logo|placeholder|blank|loading|alipay|wechat|whatsapp|kefu|service|avatar|thumb|thumbnail|small|tiny|mini|sizechart|size\s*chart|chart|table|guide|tips|hot|badge|flag|promo|banner|sale|discount|qr)/i;
-  
-  const finalImages = imageList.filter(url => !deny.test(url)).slice(0, 50);
-  console.log(`[ExtractImages] Found ${imageList.length} raw images, ${finalImages.length} after filtering`);
-  
-  return finalImages;
+  return extractCjProductGalleryImages(item, 50);
 }
 
 // Support both GET (legacy) and POST (batch mode with large seenPids)
@@ -987,11 +861,15 @@ async function handleSearch(req: Request, isPost: boolean) {
       
       console.log(`[Search&Price] Product ${pid} => Final: stock=${stock}, listedNum=${listedNum}, CJ=${totalVerifiedInventory}, Factory=${totalUnVerifiedInventory}`);
       
-      let images = extractAllImages(fullDetails || item);
-      console.log(`[Search&Price] Product ${pid}: ${images.length} images from details`);
-      
-      // Extract additional product info from fullDetails or item
+      // Prefer full details for hero/gallery quality; only fallback to list item if details lack media.
       const source = fullDetails || item;
+      let images = extractAllImages(source);
+      if (images.length === 0 && source !== item) {
+        images = extractAllImages(item);
+      }
+      console.log(`[Search&Price] Product ${pid}: ${images.length} images from primary source`);
+
+      // Extract additional product info from fullDetails or item
       const rawDescriptionHtml = String(source.description || source.productDescription || source.descriptionEn || source.productDescEn || source.desc || '').trim();
       
       // Legacy display placeholders kept for compatibility with untouched UI paths.
@@ -1495,7 +1373,17 @@ async function handleSearch(req: Request, isPost: boolean) {
       
       // Build set of images from variants (these are the purchasable color options)
       const variantImages: string[] = [];
-      const seenUrls = new Set<string>();
+      const seenVariantImageKeys = new Set<string>();
+      const pushVariantImage = (url: unknown, preferFront: boolean = false) => {
+        if (typeof url !== 'string') return;
+        const cleaned = url.trim();
+        if (!cleaned.startsWith('http')) return;
+        const key = normalizeCjImageKey(cleaned);
+        if (!key || seenVariantImageKeys.has(key)) return;
+        seenVariantImageKeys.add(key);
+        if (preferFront) variantImages.unshift(cleaned);
+        else variantImages.push(cleaned);
+      };
       
       // Build COLOR-TO-IMAGE mapping from productPropertyList (CJ's structured color data)
       // This maps color names like "Gold", "Silver" to their specific product images
@@ -1516,12 +1404,10 @@ async function handleSearch(req: Request, isPost: boolean) {
                 const colorImg = pv.image || pv.imageUrl || pv.propImage || pv.bigImage || pv.pic || '';
                 if (cleanColor && cleanColor.length > 0 && cleanColor.length < 50 && /[a-zA-Z]/.test(cleanColor)) {
                   if (typeof colorImg === 'string' && colorImg.startsWith('http')) {
-                    colorImageMap[cleanColor] = colorImg;
+                    const normalizedColorImage = colorImg.trim();
+                    colorImageMap[cleanColor] = normalizedColorImage;
                     // Also add to variantImages list
-                    if (!seenUrls.has(colorImg)) {
-                      seenUrls.add(colorImg);
-                      variantImages.push(colorImg);
-                    }
+                    pushVariantImage(normalizedColorImage);
                   }
                 }
               }
@@ -1534,11 +1420,8 @@ async function handleSearch(req: Request, isPost: boolean) {
       }
       
       // First, add the main product image (this is always the hero image)
-      const mainImage = item.productImage || item.image || item.bigImage;
-      if (typeof mainImage === 'string' && mainImage.startsWith('http') && !seenUrls.has(mainImage)) {
-        seenUrls.add(mainImage);
-        variantImages.unshift(mainImage); // Main image goes first
-      }
+      const mainImage = source.productImage || source.image || source.bigImage || item.productImage || item.image || item.bigImage;
+      pushVariantImage(mainImage, true); // Main image goes first
       
       // Extract images from ALL variants (CJ only returns purchasable ones)
       // Check all possible image field names
@@ -1546,22 +1429,14 @@ async function handleSearch(req: Request, isPost: boolean) {
       
       for (const v of variants) {
         for (const field of imgFields) {
-          const url = v[field];
-          if (typeof url === 'string' && url.startsWith('http') && !seenUrls.has(url)) {
-            seenUrls.add(url);
-            variantImages.push(url);
-          }
+          pushVariantImage(v[field]);
         }
         
         // Also check nested structures like variantProperty
         const variantProps = v.variantPropertyList || v.propertyList || v.properties || [];
         if (Array.isArray(variantProps)) {
           for (const prop of variantProps) {
-            const propImg = prop?.image || prop?.propImage || prop?.imageUrl || prop?.pic;
-            if (typeof propImg === 'string' && propImg.startsWith('http') && !seenUrls.has(propImg)) {
-              seenUrls.add(propImg);
-              variantImages.push(propImg);
-            }
+            pushVariantImage(prop?.image || prop?.propImage || prop?.imageUrl || prop?.pic);
           }
         }
       }
@@ -1845,45 +1720,31 @@ async function handleSearch(req: Request, isPost: boolean) {
       // Don't add duplicate fallback here - Overview already shows Category, Material, Weight etc.
       // productInfo is specifically for variant/specification details not shown in Overview
       
-      // MERGE ALL IMAGES: combine extractAllImages results + variantImages (no replacement)
-      // This ensures we get the full gallery (productImageList, detailImageList) + color-specific images
+      // Merge with deterministic source ordering:
+      // 1) full-details extraction (already hero-ranked), 2) color map, 3) variant media, 4) list item fallback.
       const allImages: string[] = [];
-      const finalSeenUrls = new Set<string>();
-      
-      // 1. First add main product image (hero)
-      const heroImage = item.productImage || item.image || item.bigImage;
-      if (typeof heroImage === 'string' && heroImage.startsWith('http') && !finalSeenUrls.has(heroImage)) {
-        finalSeenUrls.add(heroImage);
-        allImages.push(heroImage);
-      }
-      
-      // 2. Add all color-specific images (from colorImageMap) - these are important for color swatches
-      for (const colorImg of Object.values(colorImageMap)) {
-        if (!finalSeenUrls.has(colorImg)) {
-          finalSeenUrls.add(colorImg);
-          allImages.push(colorImg);
+      const finalSeenImageKeys = new Set<string>();
+      const pushFinalImage = (url: unknown) => {
+        if (typeof url !== 'string') return;
+        const cleaned = url.trim();
+        if (!cleaned.startsWith('http')) return;
+        const key = normalizeCjImageKey(cleaned);
+        if (!key || finalSeenImageKeys.has(key)) return;
+        finalSeenImageKeys.add(key);
+        allImages.push(cleaned);
+      };
+
+      for (const img of images) pushFinalImage(img);
+      for (const colorImg of Object.values(colorImageMap)) pushFinalImage(colorImg);
+      for (const img of variantImages) pushFinalImage(img);
+      if (source !== item) {
+        for (const fallbackImg of extractAllImages(item)) {
+          pushFinalImage(fallbackImg);
         }
       }
-      
-      // 3. Add variant images 
-      for (const img of variantImages) {
-        if (!finalSeenUrls.has(img)) {
-          finalSeenUrls.add(img);
-          allImages.push(img);
-        }
-      }
-      
-      // 4. Add original extractAllImages results (gallery, detail images, etc.)
-      for (const img of images) {
-        if (!finalSeenUrls.has(img)) {
-          finalSeenUrls.add(img);
-          allImages.push(img);
-        }
-      }
-      
-      // Update images to merged result
-      images = allImages.slice(0, 50);
-      console.log(`[Search&Price] Product ${pid}: Final ${images.length} images (merged from all sources)`);
+
+      images = prioritizeCjHeroImage(allImages).slice(0, 50);
+      console.log(`[Search&Price] Product ${pid}: Final ${images.length} images (deterministic merge)`);
       
       // Log colorImageMap if populated (for debugging)
       if (Object.keys(colorImageMap).length > 0) {
