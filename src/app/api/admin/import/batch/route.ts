@@ -9,6 +9,7 @@ import {
   getBatches,
   checkProductQueueSchema
 } from "@/lib/db/import-db";
+import { extractCjProductVideoUrl, normalizeCjVideoUrl } from "@/lib/cj/video";
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -121,6 +122,10 @@ export async function POST(req: NextRequest) {
         images = [p.image];
       }
 
+      const extractedVideoUrl = extractCjProductVideoUrl(p);
+      const fallbackVideoUrl = normalizeCjVideoUrl(p?.videoUrl || p?.video || p?.productVideo);
+      const videoUrl = extractedVideoUrl || fallbackVideoUrl || undefined;
+
       const result = await addProductToQueue(batch.id, {
         productId,
         cjSku: p.cjSku || undefined,
@@ -134,7 +139,7 @@ export async function POST(req: NextRequest) {
         packingList: p.packingList || undefined,
         category: p.categoryName || category || "General",
         images,
-        videoUrl: p.videoUrl || undefined,
+        videoUrl,
         variants: p.variants || [],
         avgPrice,
         displayedRating: typeof p.displayedRating === 'number' ? p.displayedRating : undefined,

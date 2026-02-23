@@ -3,6 +3,7 @@ import { loadToken, saveToken } from '@/lib/integration/token-store';
 import { fetchJson } from '@/lib/http';
 import { getSetting } from '@/lib/settings';
 import { extractCjProductGalleryImages } from '@/lib/cj/image-gallery';
+import { extractCjProductVideoUrl } from '@/lib/cj/video';
 
 // CJ v2 client with token auth per official docs:
 // - POST /authentication/getAccessToken { apiKey }
@@ -1789,15 +1790,7 @@ export function mapCjItemToProductLike(item: any): CjProductLike | null {
   // --- Image collection (shared deterministic CJ helper) ---
   const filteredImages: string[] = extractCjProductGalleryImages(item, 30);
 
-  // Video detection: some responses may contain videoUrl or list
-  let videoUrl: string | null = (item.video || item.videoUrl || null) as string | null;
-  try {
-    const vlist: any = (item as any).videoList || (item as any).videos;
-    if (!videoUrl && Array.isArray(vlist) && vlist.length > 0) {
-      const first = vlist.find((x: any) => typeof x === 'string') || vlist.find((x: any) => x && typeof x.url === 'string')?.url;
-      if (first && typeof first === 'string') videoUrl = first;
-    }
-  } catch {}
+  const videoUrl = extractCjProductVideoUrl(item) ?? null;
 
   // Helpers to coerce numbers from various shapes
   const toNum = (x: any): number | undefined => {

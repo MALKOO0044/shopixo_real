@@ -7,6 +7,7 @@ import { createClient } from '@supabase/supabase-js';
 import { hasTable } from '@/lib/db-features';
 import { computeRetailFromLanded, sarToUsd, usdToSar } from '@/lib/pricing';
 import { extractCjProductGalleryImages, normalizeCjImageKey, prioritizeCjHeroImage } from '@/lib/cj/image-gallery';
+import { extractCjProductVideoUrl } from '@/lib/cj/video';
 
 function getSupabaseAdmin() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -770,7 +771,7 @@ export async function GET(
     
     const originCountry = String(source.originCountry || source.countryOrigin || '').trim() || undefined;
     const hsCode = source.entryCode ? `${source.entryCode}${source.entryNameEn ? ` (${source.entryNameEn})` : ''}` : undefined;
-    const videoUrl = String(source.videoUrl || source.video || source.productVideo || '').trim() || undefined;
+    const videoUrl = extractCjProductVideoUrl(source);
 
     // Compute internal rating from signals
     try {

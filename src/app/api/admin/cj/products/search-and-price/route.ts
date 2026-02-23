@@ -6,6 +6,7 @@ import { loggerForRequest } from '@/lib/log';
 import { usdToSar, sarToUsd, computeRetailFromLanded } from '@/lib/pricing';
 import { computeRating } from '@/lib/rating/engine';
 import { extractCjProductGalleryImages, normalizeCjImageKey, prioritizeCjHeroImage } from '@/lib/cj/image-gallery';
+import { extractCjProductVideoUrl } from '@/lib/cj/video';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -330,6 +331,12 @@ function extractVariantColorSize(variant: any, fallbackName?: string): { color?:
 
 function extractAllImages(item: any): string[] {
   return extractCjProductGalleryImages(item, 50);
+}
+
+function extractBestVideoUrl(primary: any, fallback?: any): string | undefined {
+  const primaryVideo = extractCjProductVideoUrl(primary);
+  if (primaryVideo) return primaryVideo;
+  return fallback ? extractCjProductVideoUrl(fallback) : undefined;
 }
 
 // Support both GET (legacy) and POST (batch mode with large seenPids)
@@ -867,7 +874,11 @@ async function handleSearch(req: Request, isPost: boolean) {
       if (images.length === 0 && source !== item) {
         images = extractAllImages(item);
       }
+      const videoUrl = extractBestVideoUrl(source, source !== item ? item : undefined);
       console.log(`[Search&Price] Product ${pid}: ${images.length} images from primary source`);
+      if (videoUrl) {
+        console.log(`[Search&Price] Product ${pid}: video URL detected`);
+      }
 
       // Extract additional product info from fullDetails or item
       const rawDescriptionHtml = String(source.description || source.productDescription || source.descriptionEn || source.productDescEn || source.desc || '').trim();
@@ -2176,9 +2187,6 @@ async function handleSearch(req: Request, isPost: boolean) {
       // Extract origin country and HS code
       const originCountry = String(source.originCountry || source.countryOrigin || source.originArea || '').trim() || undefined;
       const hsCode = source.entryCode ? `${source.entryCode}${source.entryNameEn ? ` (${source.entryNameEn})` : ''}` : undefined;
-      
-      // Extract video URL if available
-      const videoUrl = String(source.videoUrl || source.video || source.productVideo || '').trim() || undefined;
       
       pricedProducts.push({
         pid,

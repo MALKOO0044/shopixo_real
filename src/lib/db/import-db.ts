@@ -2,6 +2,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { computeRating, normalizeDisplayedRating } from '@/lib/rating/engine';
 import { hasTable } from '@/lib/db-features';
 import { sarToUsd } from '@/lib/pricing';
+import { normalizeCjVideoUrl } from '@/lib/cj/video';
 
 let supabaseAdmin: SupabaseClient | null = null;
 
@@ -224,7 +225,8 @@ export async function addProductToQueue(batchId: number, product: {
     if (v?.sellPriceSAR == null) return { success: false, error: 'Missing required field: sellPriceSAR' };
   }
 
-  const hasVideo = typeof product.videoUrl === 'string' && !!product.videoUrl?.trim();
+  const normalizedVideoUrl = normalizeCjVideoUrl(product.videoUrl);
+  const hasVideo = typeof normalizedVideoUrl === 'string' && normalizedVideoUrl.length > 0;
   const admin = supabase as SupabaseClient;
 
   async function generateUniqueProductCode(client: SupabaseClient): Promise<string> {
@@ -353,7 +355,7 @@ export async function addProductToQueue(batchId: number, product: {
     profit_margin: product.profitMargin || null,
     color_image_map: product.colorImageMap || null,
     product_code: productCode,
-    video_url: product.videoUrl || null,
+    video_url: normalizedVideoUrl || null,
     has_video: hasVideo,
   };
   
