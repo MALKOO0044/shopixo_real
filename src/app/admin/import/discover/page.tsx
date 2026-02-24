@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useMemo, type MouseEvent as ReactMouseEvent } from "react";
 import Link from "next/link";
 import type { Route } from "next";
 import { Package, Loader2, CheckCircle, Star, Trash2, Eye, X, Play, TrendingUp, ChevronLeft, ChevronRight, Image as ImageIcon, BarChart3, DollarSign, Grid3X3, FileText, Truck, Sparkles } from "lucide-react";
@@ -226,8 +226,8 @@ export default function ProductDiscoveryPage() {
           parentId: categoryId,
           level: 2,
         }));
-        setFeatures(prev => {
-          const filtered = prev.filter(f => f.parentId !== categoryId);
+        setFeatures((prev: FeatureOption[]) => {
+          const filtered = prev.filter((f: FeatureOption) => f.parentId !== categoryId);
           return [...filtered, ...newFeatures];
         });
       }
@@ -255,6 +255,7 @@ export default function ProductDiscoveryPage() {
     let seenPids: string[] = []; // Track processed PIDs across batches
     let batchNumber = 0;
     let lastError: string | null = null;
+    let lastShortfallReason: string | null = null;
     let consecutiveEmptyBatches = 0; // Track stalls
     
     try {
@@ -278,6 +279,7 @@ export default function ProductDiscoveryPage() {
           minRating: minRating,
           shippingMethod: shippingMethod,
           freeShippingOnly: freeShippingOnly ? "1" : "0",
+          mediaMode: media,
           // Batch mode params - cursor-based pagination
           batchMode: "1",
           batchSize: "3",
@@ -310,6 +312,9 @@ export default function ProductDiscoveryPage() {
         
         // Add products from this batch, but stop at exactly the requested quantity
         const batchProducts: PricedProduct[] = data.products || [];
+        if (typeof data.shortfallReason === 'string' && data.shortfallReason.trim()) {
+          lastShortfallReason = data.shortfallReason.trim();
+        }
         for (const p of batchProducts) {
           // Stop if we've reached the requested quantity
           if (allProducts.length >= quantity) break;
@@ -375,7 +380,7 @@ export default function ProductDiscoveryPage() {
       
       // Check if we got the requested quantity
       if (allProducts.length < quantity) {
-        const reason = lastError || `Found ${allProducts.length}/${quantity} products. Not enough matching products in this category.`;
+        const reason = lastError || lastShortfallReason || `Found ${allProducts.length}/${quantity} products. Not enough matching products in this category.`;
         setError(`Notice: ${reason}`);
       }
       
@@ -395,10 +400,10 @@ export default function ProductDiscoveryPage() {
     }
   };
 
-  const toggleSelect = (productId: string, e: React.MouseEvent) => {
+  const toggleSelect = (productId: string, e: ReactMouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
-    setSelected(prev => {
-      const next = new Set(prev);
+    setSelected((prev: Set<string>) => {
+      const next = new Set<string>(prev);
       if (next.has(productId)) {
         next.delete(productId);
       } else {
@@ -408,25 +413,25 @@ export default function ProductDiscoveryPage() {
     });
   };
 
-  const selectAll = () => {
-    setSelected(new Set(products.map(p => p.pid)));
+  const selectAll = (): void => {
+    setSelected(new Set<string>(products.map((p: PricedProduct) => p.pid)));
   };
 
-  const deselectAll = () => {
+  const deselectAll = (): void => {
     setSelected(new Set());
   };
 
-  const removeProduct = (productId: string, e: React.MouseEvent) => {
+  const removeProduct = (productId: string, e: ReactMouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
-    setProducts(prev => prev.filter(p => p.pid !== productId));
-    setSelected(prev => {
-      const next = new Set(prev);
+    setProducts((prev: PricedProduct[]) => prev.filter((p: PricedProduct) => p.pid !== productId));
+    setSelected((prev: Set<string>) => {
+      const next = new Set<string>(prev);
       next.delete(productId);
       return next;
     });
   };
 
-  const openPreview = (product: PricedProduct, e: React.MouseEvent) => {
+  const openPreview = (product: PricedProduct, e: ReactMouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
     setPreviewProduct(product);
     setPreviewPage(1);
@@ -513,15 +518,16 @@ export default function ProductDiscoveryPage() {
     
     setSaving(true);
     try {
-      const selectedProducts = products.filter(p => selected.has(p.pid));
+      const selectedProducts = products.filter((p: PricedProduct) => selected.has(p.pid));
       const res = await fetch("/api/admin/import/batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: batchName || `Discovery ${new Date().toLocaleDateString()}`,
-          category: category !== 'all' ? categories.find(c => c.categoryId === category)?.categoryName : undefined,
-          products: selectedProducts.map(p => {
-            const pricedVariants = p.variants.filter(v => {
+          mediaMode: media,
+          category: category !== 'all' ? categories.find((c: Category) => c.categoryId === category)?.categoryName : undefined,
+          products: selectedProducts.map((p: PricedProduct) => {
+            const pricedVariants = p.variants.filter((v: PricedVariant) => {
               const sell = Number((v as any)?.sellPriceSAR);
               return Number.isFinite(sell) && sell > 0;
             });
@@ -597,6 +603,12 @@ export default function ProductDiscoveryPage() {
               packingList: p.packingList,
               images: p.images,
               videoUrl: p.videoUrl,
+              videoSourceUrl: p.videoSourceUrl,
+              video4kUrl: p.video4kUrl,
+              videoDeliveryMode: p.videoDeliveryMode,
+              videoQualityGatePassed: p.videoQualityGatePassed,
+              videoSourceQualityHint: p.videoSourceQualityHint,
+              mediaMode: media,
               minPriceSAR: p.minPriceSAR,
               maxPriceSAR: p.maxPriceSAR,
               avgPriceSAR: p.avgPriceSAR,
@@ -671,6 +683,20 @@ export default function ProductDiscoveryPage() {
       const data = await res.json();
       if (data.ok && data.batchId) {
         setSavedBatchId(data.batchId);
+        const skippedNotices: string[] = [];
+        if (typeof data.productsSkippedMissingVideo === 'number' && data.productsSkippedMissingVideo > 0) {
+          skippedNotices.push(
+            `${data.productsSkippedMissingVideo} selected products were skipped because video mode requires video.`
+          );
+        }
+        if (typeof data.productsSkippedVideoQualityGate === 'number' && data.productsSkippedVideoQualityGate > 0) {
+          skippedNotices.push(
+            `${data.productsSkippedVideoQualityGate} selected products were skipped because strict 4K quality gate failed.`
+          );
+        }
+        if (skippedNotices.length > 0) {
+          setError(`Notice: ${skippedNotices.join(' ')}`);
+        }
       } else {
         throw new Error(data.error || "Failed to save batch");
       }
@@ -713,9 +739,9 @@ export default function ProductDiscoveryPage() {
   const toggleFeature = (featureId: string) => {
     const isRemoving = selectedFeatures.includes(featureId);
     
-    setSelectedFeatures(prev => {
+    setSelectedFeatures((prev: string[]) => {
       if (prev.includes(featureId)) {
-        return prev.filter(f => f !== featureId);
+        return prev.filter((f: string) => f !== featureId);
       } else {
         return [...prev, featureId];
       }
@@ -723,12 +749,12 @@ export default function ProductDiscoveryPage() {
     
     // Always sync selectedFeaturesWithIds - remove if already selected
     if (isRemoving) {
-      setSelectedFeaturesWithIds(prev => prev.filter(sf => sf.cjCategoryId !== featureId));
+      setSelectedFeaturesWithIds((prev: SelectedFeature[]) => prev.filter((sf: SelectedFeature) => sf.cjCategoryId !== featureId));
       return; // Exit early on removal
     }
     
     // Adding new feature - try to find matching Supabase category
-    const feature = features.find(f => f.id === featureId);
+    const feature = features.find((f: FeatureOption) => f.id === featureId);
     if (feature) {
       const matchingSupabase = findMatchingSupabaseCategory(feature.name);
       const newFeature: SelectedFeature = {
@@ -737,7 +763,7 @@ export default function ProductDiscoveryPage() {
         supabaseCategoryId: matchingSupabase?.id || 0,
         supabaseCategorySlug: matchingSupabase?.slug || '',
       };
-      setSelectedFeaturesWithIds(prev => [...prev, newFeature]);
+      setSelectedFeaturesWithIds((prev: SelectedFeature[]) => [...prev, newFeature]);
       if (matchingSupabase) {
         console.log(`[Discovery] Matched CJ "${feature.name}" to Supabase category ${matchingSupabase.id} (${matchingSupabase.slug})`);
       } else {
@@ -747,41 +773,26 @@ export default function ProductDiscoveryPage() {
   };
 
   const getFeatureName = (id: string) => {
-    const feature = features.find(f => f.id === id);
+    const feature = features.find((f: FeatureOption) => f.id === id);
     return feature?.name || id;
   };
 
   const getCategoryChildren = (parentId: string) => {
-    return features.filter(f => f.parentId === parentId);
+    return features.filter((f: FeatureOption) => f.parentId === parentId);
   };
 
-  const selectedCategory = categories.find(c => c.categoryId === category);
-  
-  const hasDiscoverProductVideo = (product: PricedProduct): boolean => {
-    return typeof product.videoUrl === 'string' && product.videoUrl.trim().length > 0;
-  };
+  const selectedCategory = categories.find((c: Category) => c.categoryId === category);
 
-  const hasDiscoverProductImages = (product: PricedProduct): boolean => {
-    return Array.isArray(product.images) && product.images.length > 0;
-  };
-
-  // Apply client-side media filter to fetched products
-  const displayedProducts = products.filter((p) => {
-    const hasVideo = hasDiscoverProductVideo(p);
-    const hasImages = hasDiscoverProductImages(p);
-
-    if (media === 'withVideo') return hasVideo;
-    if (media === 'imagesOnly') return hasImages && !hasVideo;
-    if (media === 'both') return hasImages && hasVideo;
-    return true;
-  });
+  // Backend search-and-price route is authoritative for media filtering.
+  // Keep rendering aligned with backend results to avoid client/backend divergence.
+  const displayedProducts = products;
   
   // Find matching Supabase main category based on CJ category name
   const getMatchingSupabaseMainCategory = (): SupabaseCategory | null => {
     if (!selectedCategory || category === 'all') return null;
     
     const cjName = selectedCategory.categoryName.toLowerCase();
-    return supabaseCategories.find(sc => {
+    return supabaseCategories.find((sc: SupabaseCategory) => {
       const scName = sc.name.toLowerCase();
       const scSlug = sc.slug.toLowerCase();
       return scName === cjName || 
@@ -856,9 +867,9 @@ export default function ProductDiscoveryPage() {
                     
                     // Track the Supabase category ID if available
                     if (supabaseId && parseInt(supabaseId) > 0) {
-                      const existing = selectedFeaturesWithIds.find(sf => sf.cjCategoryId === cjId);
+                      const existing = selectedFeaturesWithIds.find((sf: SelectedFeature) => sf.cjCategoryId === cjId);
                       if (!existing) {
-                        setSelectedFeaturesWithIds(prev => [...prev, {
+                        setSelectedFeaturesWithIds((prev: SelectedFeature[]) => [...prev, {
                           cjCategoryId: cjId,
                           cjCategoryName: name,
                           supabaseCategoryId: parseInt(supabaseId),
@@ -1142,7 +1153,7 @@ export default function ProductDiscoveryPage() {
           <div className="flex items-center justify-between bg-white border border-gray-200 rounded-lg p-4">
             <div className="flex items-center gap-4">
               <span className="text-sm text-gray-900">
-                Found <strong>{displayedProducts.length}</strong> of <strong>{products.length}</strong> products (filtered)
+                Found <strong>{displayedProducts.length}</strong> products (server-filtered)
               </span>
               <span className="text-sm text-gray-400">|</span>
               <span className="text-sm text-gray-600">
@@ -1150,7 +1161,7 @@ export default function ProductDiscoveryPage() {
               </span>
             </div>
             <div className="flex items-center gap-3">
-              <button onClick={() => setSelected(new Set(displayedProducts.map(p => p.pid)))} className="text-sm text-blue-600 hover:underline">Select All</button>
+              <button onClick={selectAll} className="text-sm text-blue-600 hover:underline">Select All</button>
               <button onClick={deselectAll} className="text-sm text-gray-500 hover:underline">Clear</button>
             </div>
           </div>

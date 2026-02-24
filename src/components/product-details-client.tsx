@@ -63,16 +63,16 @@ function transformVideo(url: string): string {
       const idx = url.indexOf(marker);
       const before = url.slice(0, idx + marker.length);
       const after = url.slice(idx + marker.length);
-      const hasTransforms = after && !after.startsWith('v');
-      const inject = 'f_mp4,vc_h264/';
-      const core = hasTransforms ? after : (inject + after);
+      const has4kTransforms = /(w_3840|h_2160|w_4096|2160p|\b4k\b|3840x2160|4096x2160)/i.test(after);
+      const inject = 'f_mp4,vc_h264,ac_aac,q_auto:best,c_limit,w_3840,h_2160/';
+      const core = has4kTransforms ? after : (inject + after);
       return (before + core).replace(/\.(mp4|webm|ogg|m3u8)(\?.*)?$/i, '.mp4');
     }
     const cloud = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
     const isHttp = typeof url === 'string' && /^https?:\/\//i.test(url);
     const isMp4 = typeof url === 'string' && /\.mp4(\?|#|$)/i.test(url);
     if (cloud && isHttp && !isMp4) {
-      return `https://res.cloudinary.com/${cloud}/video/fetch/f_mp4,vc_h264/${encodeURIComponent(url)}`;
+      return `https://res.cloudinary.com/${cloud}/video/fetch/f_mp4,vc_h264,ac_aac,q_auto:best,c_limit,w_3840,h_2160/${encodeURIComponent(url)}`;
     }
   } catch {}
   return url;
@@ -1551,7 +1551,7 @@ export default function ProductDetailsClient({
           <MediaGallery 
             images={product.images} 
             title={product.title}
-            videoUrl={(product as any).video_url}
+            videoUrl={(product as any).video_4k_url || (product as any).video_url}
             selectedColor={selectedColor}
             colorImageMap={colorImageMap}
             availableColors={colorOptions}

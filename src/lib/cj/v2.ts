@@ -4,6 +4,7 @@ import { fetchJson } from '@/lib/http';
 import { getSetting } from '@/lib/settings';
 import { extractCjProductGalleryImages } from '@/lib/cj/image-gallery';
 import { extractCjProductVideoUrl } from '@/lib/cj/video';
+import { build4kVideoDelivery } from '@/lib/video/delivery';
 
 // CJ v2 client with token auth per official docs:
 // - POST /authentication/getAccessToken { apiKey }
@@ -956,6 +957,11 @@ export type CjProductLike = {
   name: string;
   images: string[];
   videoUrl?: string | null;
+  videoSourceUrl?: string | null;
+  video4kUrl?: string | null;
+  videoDeliveryMode?: 'native' | 'enhanced' | 'passthrough' | null;
+  videoQualityGatePassed?: boolean | null;
+  videoSourceQualityHint?: '4k' | 'hd' | 'sd' | 'unknown' | null;
   variants: CjVariantLike[];
   deliveryTimeHours?: number | null; // estimated delivery time in hours (if provided by CJ)
   processingTimeHours?: number | null; // estimated processing time in hours (if provided by CJ)
@@ -1790,7 +1796,11 @@ export function mapCjItemToProductLike(item: any): CjProductLike | null {
   // --- Image collection (shared deterministic CJ helper) ---
   const filteredImages: string[] = extractCjProductGalleryImages(item, 30);
 
-  const videoUrl = extractCjProductVideoUrl(item) ?? null;
+  const sourceVideoUrl = extractCjProductVideoUrl(item);
+  const videoDelivery = build4kVideoDelivery(sourceVideoUrl);
+  const deliverableVideoUrl = videoDelivery.qualityGatePassed
+    ? (videoDelivery.deliveryUrl || null)
+    : null;
 
   // Helpers to coerce numbers from various shapes
   const toNum = (x: any): number | undefined => {
@@ -2038,7 +2048,12 @@ export function mapCjItemToProductLike(item: any): CjProductLike | null {
     productId,
     name,
     images: filteredImages,
-    videoUrl: videoUrl || null,
+    videoUrl: deliverableVideoUrl,
+    videoSourceUrl: videoDelivery.sourceUrl || null,
+    video4kUrl: deliverableVideoUrl,
+    videoDeliveryMode: videoDelivery.mode,
+    videoQualityGatePassed: videoDelivery.qualityGatePassed,
+    videoSourceQualityHint: videoDelivery.sourceQualityHint,
     variants,
     deliveryTimeHours,
     processingTimeHours,

@@ -58,6 +58,12 @@ export type Product = {
 
   // Shipping and CJ linkage metadata (optional)
   video_url?: string | null;
+  video_source_url?: string | null;
+  video_4k_url?: string | null;
+  video_delivery_mode?: 'native' | 'enhanced' | 'passthrough' | null;
+  video_quality_gate_passed?: boolean | null;
+  video_source_quality_hint?: '4k' | 'hd' | 'sd' | 'unknown' | null;
+  media_mode?: string | null;
   processing_time_hours?: number | null;
   delivery_time_hours?: number | null;
   origin_area?: string | null;

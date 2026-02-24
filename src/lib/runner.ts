@@ -191,6 +191,13 @@ export async function stepFinderJob(id: number): Promise<{ added: number; done: 
           name: mapped.name,
           images: mapped.images,
           video_url: mapped.videoUrl || null,
+          video_source_url: mapped.videoSourceUrl || null,
+          video_4k_url: mapped.video4kUrl || null,
+          video_delivery_mode: mapped.videoDeliveryMode || null,
+          video_quality_gate_passed:
+            typeof mapped.videoQualityGatePassed === 'boolean' ? mapped.videoQualityGatePassed : null,
+          video_source_quality_hint: mapped.videoSourceQualityHint || null,
+          has_video: Boolean(mapped.video4kUrl || mapped.videoUrl),
           origin_area: (mapped as any).originArea ?? null,
           origin_country_code: (mapped as any).originCountryCode ?? null,
           processing_time_hours: (mapped as any).processingTimeHours ?? null,

@@ -60,6 +60,7 @@ export async function POST(req: Request) {
     const pid: string | undefined = body?.pid || undefined;
     const itemsIn: CjProductLike[] | undefined = body?.items || undefined;
     const categoryParam: string = (body?.category || 'General').trim();
+    const mediaMode: string | undefined = typeof body?.mediaMode === 'string' ? body.mediaMode : undefined;
 
     let items: CjProductLike[] = [];
     if (Array.isArray(itemsIn) && itemsIn.length > 0) {
@@ -89,6 +90,24 @@ export async function POST(req: Request) {
 
     const results: any[] = [];
     const hasVariantsTable = await hasTable('product_variants');
+    const productOptionalColumns = [
+      'is_active',
+      'video_url',
+      'video_source_url',
+      'video_4k_url',
+      'video_delivery_mode',
+      'video_quality_gate_passed',
+      'video_source_quality_hint',
+      'media_mode',
+      'has_video',
+    ] as const;
+    const optionalColumnSet = new Set<string>();
+    const optionalColumnResults = await Promise.all(
+      productOptionalColumns.map(async (col) => ({ col, exists: await hasColumn('products', col).catch(() => false) }))
+    );
+    for (const result of optionalColumnResults) {
+      if (result.exists) optionalColumnSet.add(result.col);
+    }
 
     for (const cj of items) {
       try {
@@ -133,6 +152,14 @@ export async function POST(req: Request) {
           category: categoryParam,
           stock: totalStock,
           video_url: cj.videoUrl || null,
+          video_source_url: cj.videoSourceUrl || null,
+          video_4k_url: cj.video4kUrl || null,
+          video_delivery_mode: cj.videoDeliveryMode || null,
+          video_quality_gate_passed:
+            typeof cj.videoQualityGatePassed === 'boolean' ? cj.videoQualityGatePassed : null,
+          video_source_quality_hint: cj.videoSourceQualityHint || null,
+          media_mode: mediaMode || null,
+          has_video: Boolean(cj.video4kUrl || cj.videoUrl),
           processing_time_hours: null,
           delivery_time_hours: cj.deliveryTimeHours ?? null,
           origin_area: cj.originArea ?? null,
@@ -149,6 +176,12 @@ export async function POST(req: Request) {
         if (!(await hasColumn('products', 'is_active'))) {
           const { is_active, ...rest } = productPayload;
           productPayload = rest;
+        }
+
+        for (const col of productOptionalColumns) {
+          if (!optionalColumnSet.has(col) && col in productPayload) {
+            delete productPayload[col];
+          }
         }
 
         let productId: number;

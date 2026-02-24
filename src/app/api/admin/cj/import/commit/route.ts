@@ -5,7 +5,7 @@ import { isKillSwitchOn } from '@/lib/settings'
 import { createClient } from '@supabase/supabase-js'
 import { mapCjItemToProductLike, queryProductByPidOrKeyword } from '@/lib/cj/v2'
 import { calculateRetailSar, usdToSar } from '@/lib/pricing'
-import { hasTable } from '@/lib/db-features'
+import { hasColumn, hasTable } from '@/lib/db-features'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -31,10 +31,29 @@ export async function POST(req: Request) {
 
     let body: any = {}
     try { body = await req.json() } catch {}
-    const items: Array<{ cj_product_id: string; includeSkus?: string[]; category?: string; margin?: number; handlingSar?: number; cjCurrency?: 'USD'|'SAR' }> = Array.isArray(body?.selected) ? body.selected : []
+    const mediaModeFromBody = typeof body?.mediaMode === 'string' ? body.mediaMode : null
+    const items: Array<{ cj_product_id: string; includeSkus?: string[]; category?: string; margin?: number; handlingSar?: number; cjCurrency?: 'USD'|'SAR'; mediaMode?: string }> = Array.isArray(body?.selected) ? body.selected : []
     if (!items || items.length === 0) return NextResponse.json({ ok: false, error: 'selected array required' }, { status: 400 })
 
     const results: any[] = []
+    const productOptionalColumns = [
+      'is_active',
+      'video_url',
+      'video_source_url',
+      'video_4k_url',
+      'video_delivery_mode',
+      'video_quality_gate_passed',
+      'video_source_quality_hint',
+      'media_mode',
+      'has_video',
+    ] as const
+    const optionalColumnSet = new Set<string>()
+    const optionalColumnResults = await Promise.all(
+      productOptionalColumns.map(async (col) => ({ col, exists: await hasColumn('products', col).catch(() => false) }))
+    )
+    for (const result of optionalColumnResults) {
+      if (result.exists) optionalColumnSet.add(result.col)
+    }
 
     for (const it of items) {
       try {
@@ -47,6 +66,7 @@ export async function POST(req: Request) {
         // Collect product payload
         const images = cj.images || []
         const video = cj.videoUrl || null
+        const mediaMode = typeof it.mediaMode === 'string' ? it.mediaMode : mediaModeFromBody
         const category = it.category || 'General'
         const origin_area = (cj as any).originArea ?? null
         const origin_country_code = (cj as any).originCountryCode ?? null
@@ -145,12 +165,25 @@ export async function POST(req: Request) {
           category,
           stock: stockSum,
           video_url: video,
+          video_source_url: cj.videoSourceUrl || null,
+          video_4k_url: cj.video4kUrl || null,
+          video_delivery_mode: cj.videoDeliveryMode || null,
+          video_quality_gate_passed:
+            typeof cj.videoQualityGatePassed === 'boolean' ? cj.videoQualityGatePassed : null,
+          video_source_quality_hint: cj.videoSourceQualityHint || null,
+          media_mode: mediaMode,
+          has_video: Boolean(cj.video4kUrl || cj.videoUrl),
           processing_time_hours,
           delivery_time_hours,
           origin_area,
           origin_country_code,
           cj_product_id: cj.productId,
           is_active: true,
+        }
+        for (const col of productOptionalColumns) {
+          if (!optionalColumnSet.has(col) && col in basePayload) {
+            delete basePayload[col]
+          }
         }
         let productId: number
         if (existing?.id) {

@@ -6,7 +6,8 @@ import { loggerForRequest } from '@/lib/log';
 import { usdToSar, sarToUsd, computeRetailFromLanded } from '@/lib/pricing';
 import { computeRating } from '@/lib/rating/engine';
 import { extractCjProductGalleryImages, normalizeCjImageKey, prioritizeCjHeroImage } from '@/lib/cj/image-gallery';
-import { extractCjProductVideoUrl } from '@/lib/cj/video';
+import { extractCjProductVideoCandidates, inferCjVideoQualityHint } from '@/lib/cj/video';
+import { build4kVideoDelivery } from '@/lib/video/delivery';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -128,11 +129,41 @@ type PricedProduct = {
   originCountry?: string;
   hsCode?: string;
   videoUrl?: string;
+  videoSourceUrl?: string;
+  video4kUrl?: string;
+  videoDeliveryMode?: 'native' | 'enhanced' | 'passthrough';
+  videoQualityGatePassed?: boolean;
+  videoSourceQualityHint?: '4k' | 'hd' | 'sd' | 'unknown';
   availableSizes?: string[];
   availableColors?: string[];
   availableModels?: string[];
   colorImageMap?: Record<string, string>;
 };
+
+type DiscoverMediaMode = 'any' | 'withVideo' | 'imagesOnly' | 'both';
+
+function parseDiscoverMediaMode(value: string | null): DiscoverMediaMode {
+  const normalized = String(value || '').trim();
+  if (normalized === 'withVideo' || normalized === 'imagesOnly' || normalized === 'both') {
+    return normalized;
+  }
+  return 'any';
+}
+
+function hasDiscoverVideo(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function hasDiscoverImages(images: unknown): boolean {
+  return Array.isArray(images) && images.length > 0;
+}
+
+function matchesDiscoverMediaMode(mode: DiscoverMediaMode, hasVideo: boolean, hasImages: boolean): boolean {
+  if (mode === 'withVideo') return hasVideo;
+  if (mode === 'imagesOnly') return hasImages && !hasVideo;
+  if (mode === 'both') return hasImages && hasVideo;
+  return true;
+}
 
 async function fetchCjProductPage(
   token: string, 
@@ -333,10 +364,48 @@ function extractAllImages(item: any): string[] {
   return extractCjProductGalleryImages(item, 50);
 }
 
-function extractBestVideoUrl(primary: any, fallback?: any): string | undefined {
-  const primaryVideo = extractCjProductVideoUrl(primary);
-  if (primaryVideo) return primaryVideo;
-  return fallback ? extractCjProductVideoUrl(fallback) : undefined;
+type VideoExtractionSource = 'details' | 'list' | 'none';
+
+type ExtractedVideoDiagnostics = {
+  videoUrl?: string;
+  videoDetected: boolean;
+  videoSource: VideoExtractionSource;
+  videoQualityHint: '4k' | 'hd' | 'sd' | 'unknown';
+  candidatesChecked: number;
+};
+
+function extractBestVideo(primary: any, fallback?: any): ExtractedVideoDiagnostics {
+  const primaryCandidates = extractCjProductVideoCandidates(primary, 12);
+  if (primaryCandidates.length > 0) {
+    const top = primaryCandidates[0];
+    return {
+      videoUrl: top,
+      videoDetected: true,
+      videoSource: 'details',
+      videoQualityHint: inferCjVideoQualityHint(top),
+      candidatesChecked: primaryCandidates.length,
+    };
+  }
+
+  const fallbackCandidates = fallback ? extractCjProductVideoCandidates(fallback, 12) : [];
+  if (fallbackCandidates.length > 0) {
+    const top = fallbackCandidates[0];
+    return {
+      videoUrl: top,
+      videoDetected: true,
+      videoSource: 'list',
+      videoQualityHint: inferCjVideoQualityHint(top),
+      candidatesChecked: fallbackCandidates.length,
+    };
+  }
+
+  return {
+    videoUrl: undefined,
+    videoDetected: false,
+    videoSource: 'none',
+    videoQualityHint: 'unknown',
+    candidatesChecked: 0,
+  };
 }
 
 // Support both GET (legacy) and POST (batch mode with large seenPids)
@@ -385,6 +454,7 @@ async function handleSearch(req: Request, isPost: boolean) {
     const freeShippingOnly = searchParams.get('freeShippingOnly') === '1';
     const shippingMethod = searchParams.get('shippingMethod') || 'any';
     const sizesParam = searchParams.get('sizes') || '';
+    const mediaMode = parseDiscoverMediaMode(searchParams.get('mediaMode'));
     
     // Batching parameters for Vercel timeout handling
     // batchSize: max products to fully process per request (default 3 for safe margin)
@@ -418,6 +488,7 @@ async function handleSearch(req: Request, isPost: boolean) {
         count: 0,
         requestedQuantity: quantity,
         quantityFulfilled: true,
+        mediaMode,
         duration: 0, // No processing time spent
         batch: {
           hasMore: false,
@@ -446,6 +517,7 @@ async function handleSearch(req: Request, isPost: boolean) {
     console.log(`[Search&Price]   profitMargin: ${profitMargin}%`);
     console.log(`[Search&Price]   shippingMethod: ${shippingMethod}`);
     console.log(`[Search&Price]   sizes filter: ${requestedSizes.length > 0 ? requestedSizes.join(',') : 'none'}`);
+    console.log(`[Search&Price]   mediaMode: ${mediaMode}`);
     console.log(`[Search&Price]   batchMode: ${isBatchMode}, batchSize: ${batchSize}`);
     console.log(`[Search&Price]   cursor: ${cursorParam} (cat=${cursorCatIdx}, page=${cursorPageNum}, offset=${cursorItemOffset})`);
     console.log(`[Search&Price]   seenPids: ${seenPidsFromClient.size} already processed`);
@@ -465,6 +537,36 @@ async function handleSearch(req: Request, isPost: boolean) {
     const candidateProducts: any[] = [];
     const seenPids = new Set<string>();
     const startTime = Date.now();
+    const mediaFilterStats = {
+      mode: mediaMode,
+      checked: 0,
+      passed: 0,
+      filteredOut: 0,
+      missingVideo: 0,
+      missingImages: 0,
+      missingVideoAfterExtraction: 0,
+      skippedMissingVideoPids: [] as string[],
+      videoSource: {
+        details: 0,
+        list: 0,
+        none: 0,
+      },
+      videoQualityHints: {
+        '4k': 0,
+        hd: 0,
+        sd: 0,
+        unknown: 0,
+      },
+      videoDeliveryModes: {
+        native: 0,
+        enhanced: 0,
+        passthrough: 0,
+      },
+      videoQualityGate: {
+        passed: 0,
+        failed: 0,
+      },
+    };
     // In batch mode: 8 seconds max (Vercel has 10s limit, need buffer)
     // In non-batch mode: 5 minutes for legacy compatibility
     const maxDurationMs = isBatchMode ? 8000 : 300000;
@@ -474,9 +576,14 @@ async function handleSearch(req: Request, isPost: boolean) {
     // For batch mode, use cursor-based pagination to resume from exact position
     // This avoids re-fetching pages that were already processed in previous batches
     // seenPidsFromClient is used as backup deduplication
+    const mediaCandidateMultiplier = mediaMode === 'withVideo' || mediaMode === 'both'
+      ? 12
+      : mediaMode === 'imagesOnly'
+        ? 6
+        : 3;
     const neededCandidates = isBatchMode 
-      ? batchSize * 3 // Just need enough for this batch
-      : quantity * 3; // Non-batch: 3x buffer as before
+      ? batchSize * mediaCandidateMultiplier
+      : quantity * mediaCandidateMultiplier;
     
     // Track ALL PIDs attempted in this batch (for returning to client)
     const attemptedPidsThisBatch: string[] = [];
@@ -569,11 +676,13 @@ async function handleSearch(req: Request, isPost: boolean) {
         ok: true,
         products: [],
         count: 0,
+        mediaMode,
         duration: Date.now() - startTime,
         debug: {
           categoriesSearched: categoryIds,
           totalSeen: seenPids.size,
           filtered: totalFiltered,
+          mediaFilter: mediaFilterStats,
         }
       }, { headers: { 'Cache-Control': 'no-store' } });
       r.headers.set('x-request-id', log.requestId);
@@ -638,6 +747,55 @@ async function handleSearch(req: Request, isPost: boolean) {
       } catch (e: any) {
         console.log(`[Search&Price] Product ${pid} - Failed to fetch details: ${e?.message}`);
       }
+
+      const source = fullDetails || item;
+      let images = extractAllImages(source);
+      if (images.length === 0 && source !== item) {
+        images = extractAllImages(item);
+      }
+      const videoDiagnostics = extractBestVideo(source, source !== item ? item : undefined);
+      const videoUrl = videoDiagnostics.videoUrl;
+      const hasVideo = videoDiagnostics.videoDetected;
+      const hasImages = hasDiscoverImages(images);
+      const videoDelivery = build4kVideoDelivery(videoUrl);
+      const storefrontVideoUrl = videoDelivery.deliveryUrl;
+      const hasDeliverableVideo =
+        typeof storefrontVideoUrl === 'string' &&
+        storefrontVideoUrl.length > 0 &&
+        videoDelivery.qualityGatePassed;
+
+      mediaFilterStats.checked++;
+      mediaFilterStats.videoSource[videoDiagnostics.videoSource]++;
+      mediaFilterStats.videoQualityHints[videoDiagnostics.videoQualityHint]++;
+      mediaFilterStats.videoDeliveryModes[videoDelivery.mode]++;
+      if (hasVideo) {
+        if (videoDelivery.qualityGatePassed) {
+          mediaFilterStats.videoQualityGate.passed++;
+        } else {
+          mediaFilterStats.videoQualityGate.failed++;
+        }
+      }
+      if (!hasVideo) {
+        mediaFilterStats.missingVideoAfterExtraction++;
+      }
+
+      console.log(
+        `[Search&Price] Product ${pid} media diagnostics: source=${videoDiagnostics.videoSource}, detected=${videoDiagnostics.videoDetected}, deliverable4k=${hasDeliverableVideo}, hint=${videoDiagnostics.videoQualityHint}, candidates=${videoDiagnostics.candidatesChecked}, hasImages=${hasImages}`
+      );
+
+      if (!matchesDiscoverMediaMode(mediaMode, hasDeliverableVideo, hasImages)) {
+        mediaFilterStats.filteredOut++;
+        if (!hasDeliverableVideo) {
+          mediaFilterStats.missingVideo++;
+          if (mediaFilterStats.skippedMissingVideoPids.length < 25) {
+            mediaFilterStats.skippedMissingVideoPids.push(pid);
+          }
+        }
+        if (!hasImages) mediaFilterStats.missingImages++;
+        console.log(`[Search&Price] Product ${pid} skipped by media filter mode=${mediaMode} hasDeliverableVideo=${hasDeliverableVideo} hasImages=${hasImages}`);
+        continue;
+      }
+      mediaFilterStats.passed++;
       
       // Legacy supplier/comment rating sources are intentionally not used.
       // Internal rating engine values are computed later from product signals.
@@ -867,17 +1025,11 @@ async function handleSearch(req: Request, isPost: boolean) {
       const listedNum = fullDetails?.listedNum ?? Number(item.listedNum || 0);
       
       console.log(`[Search&Price] Product ${pid} => Final: stock=${stock}, listedNum=${listedNum}, CJ=${totalVerifiedInventory}, Factory=${totalUnVerifiedInventory}`);
-      
-      // Prefer full details for hero/gallery quality; only fallback to list item if details lack media.
-      const source = fullDetails || item;
-      let images = extractAllImages(source);
-      if (images.length === 0 && source !== item) {
-        images = extractAllImages(item);
-      }
-      const videoUrl = extractBestVideoUrl(source, source !== item ? item : undefined);
       console.log(`[Search&Price] Product ${pid}: ${images.length} images from primary source`);
       if (videoUrl) {
-        console.log(`[Search&Price] Product ${pid}: video URL detected`);
+        console.log(
+          `[Search&Price] Product ${pid}: video URL detected (source=${videoDiagnostics.videoSource}, hint=${videoDiagnostics.videoQualityHint}, deliveryMode=${videoDelivery.mode}, qualityGate=${videoDelivery.qualityGatePassed})`
+        );
       }
 
       // Extract additional product info from fullDetails or item
@@ -2248,7 +2400,12 @@ async function handleSearch(req: Request, isPost: boolean) {
         estimatedDeliveryDays,
         originCountry,
         hsCode,
-        videoUrl,
+        videoUrl: hasDeliverableVideo ? storefrontVideoUrl : undefined,
+        videoSourceUrl: videoDelivery.sourceUrl,
+        video4kUrl: hasDeliverableVideo ? storefrontVideoUrl : undefined,
+        videoDeliveryMode: videoDelivery.mode,
+        videoQualityGatePassed: videoDelivery.qualityGatePassed,
+        videoSourceQualityHint: videoDelivery.sourceQualityHint,
         availableSizes: extractedSizes,
         availableColors: extractedColors,
         availableModels: extractedModels,
@@ -2284,6 +2441,7 @@ async function handleSearch(req: Request, isPost: boolean) {
     
     const duration = Date.now() - startTime;
     console.log(`[Search&Price] Complete: ${filteredProducts.length}/${quantity} products returned (${pricedProducts.length} priced, ${skippedNoShipping} skipped no shipping, ${filteredBySizes} filtered by size) in ${duration}ms`);
+    console.log(`[Search&Price] Media filter stats:`, mediaFilterStats);
     console.log(`[Search&Price] Shipping error breakdown:`, shippingErrors);
     
     // Determine fulfillment status
@@ -2299,8 +2457,12 @@ async function handleSearch(req: Request, isPost: boolean) {
         shortfallReason = 'CJ API rate limit reached. Try again in a few minutes.';
       } else if (hitTimeLimit) {
         shortfallReason = `Processing time exceeded. Got ${filteredProducts.length}/${quantity} products.`;
+      } else if (mediaMode !== 'any' && mediaFilterStats.passed === 0) {
+        shortfallReason = `No products matched media filter "${mediaMode}". Checked ${mediaFilterStats.checked} candidates and filtered out ${mediaFilterStats.filteredOut}.`;
       } else if (exhaustedCandidates) {
-        shortfallReason = `Not enough matching products found. Got ${filteredProducts.length}/${quantity} products.`;
+        shortfallReason = mediaMode === 'any'
+          ? `Not enough matching products found. Got ${filteredProducts.length}/${quantity} products.`
+          : `Not enough products matching media filter "${mediaMode}". Got ${filteredProducts.length}/${quantity} products.`;
       } else {
         shortfallReason = `Shipping calculation failed for some products. Got ${filteredProducts.length}/${quantity} products.`;
       }
@@ -2318,6 +2480,7 @@ async function handleSearch(req: Request, isPost: boolean) {
         count: 0,
         requestedQuantity: quantity,
         quantityFulfilled: false,
+        mediaMode,
         duration,
         debug: {
           candidatesFound: candidateProducts.length,
@@ -2326,6 +2489,7 @@ async function handleSearch(req: Request, isPost: boolean) {
           skippedNoShipping,
           shippingErrors,
           consecutiveRateLimitErrors,
+          mediaFilter: mediaFilterStats,
         }
       }, { status: 429, headers: { 'Cache-Control': 'no-store' } });
       r.headers.set('x-request-id', log.requestId);
@@ -2354,6 +2518,7 @@ async function handleSearch(req: Request, isPost: boolean) {
       products: productsToReturn,
       count: productsToReturn.length,
       requestedQuantity: quantity,
+      mediaMode,
       quantityFulfilled,
       shortfallReason: quantityFulfilled ? undefined : shortfallReason,
       duration,
@@ -2380,6 +2545,7 @@ async function handleSearch(req: Request, isPost: boolean) {
         hitTimeLimit,
         hitRateLimit,
         exhaustedCandidates,
+        mediaFilter: mediaFilterStats,
       }
     }, { headers: { 'Cache-Control': 'no-store' } });
     r.headers.set('x-request-id', log.requestId);

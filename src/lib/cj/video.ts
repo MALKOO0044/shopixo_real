@@ -18,6 +18,18 @@ function parseJsonArrayMaybe(value: string): unknown[] {
   }
 }
 
+function parseJsonObjectMaybe(value: string): Record<string, unknown> | null {
+  const text = String(value || '').trim()
+  if (!text.startsWith('{') || !text.endsWith('}')) return null
+  try {
+    const parsed = JSON.parse(text)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    return parsed as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
 function normalizeComparableUrl(value: string): string {
   try {
     const parsed = new URL(value)
@@ -41,6 +53,11 @@ function collectUrlsFromUnknown(value: unknown): string[] {
       return parsedArray.flatMap((entry) => collectUrlsFromUnknown(entry))
     }
 
+    const parsedObject = parseJsonObjectMaybe(raw)
+    if (parsedObject) {
+      return collectUrlsFromUnknown(parsedObject)
+    }
+
     if (/[;,|\n\r\t]+/.test(raw) && raw.includes('http')) {
       return raw
         .split(/[;,|\n\r\t]+/)
@@ -60,17 +77,31 @@ function collectUrlsFromUnknown(value: unknown): string[] {
     const candidates = [
       obj.url,
       obj.src,
-      obj.video,
       obj.videoUrl,
+      obj.video_url,
+      obj.video,
+      obj.videoSource,
+      obj.videoSrc,
+      obj.videoPath,
+      obj.videoPlayUrl,
+      obj.coverVideo,
+      obj.coverVideoUrl,
+      obj.productVideo,
+      obj.productVideoUrl,
+      obj.mainVideo,
+      obj.masterVideo,
+      obj.materialVideo,
       obj.playUrl,
       obj.playURL,
       obj.mediaUrl,
+      obj.mediaURL,
       obj.mp4,
+      obj.mov,
+      obj.m4v,
       obj.m3u8,
       obj.hls,
       obj.file,
       obj.path,
-      obj.videoPath,
       obj.outputUrl,
     ]
     return candidates.flatMap((entry) => collectUrlsFromUnknown(entry))
@@ -190,7 +221,7 @@ export function extractCjProductVideoCandidates(item: unknown, maxVideos: number
     visited.add(obj)
 
     for (const [key, entry] of Object.entries(obj)) {
-      if (/video|mp4|m3u8|playurl|mediaurl|stream/i.test(key)) {
+      if (/video|mp4|mov|m4v|m3u8|playurl|mediaurl|stream|playback|hls/i.test(key)) {
         push(entry)
       }
 

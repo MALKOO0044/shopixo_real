@@ -109,6 +109,11 @@ export type PricedProduct = {
   originCountry?: string;
   hsCode?: string;
   videoUrl?: string;
+  videoSourceUrl?: string;
+  video4kUrl?: string;
+  videoDeliveryMode?: 'native' | 'enhanced' | 'passthrough';
+  videoQualityGatePassed?: boolean;
+  videoSourceQualityHint?: '4k' | 'hd' | 'sd' | 'unknown';
   availableSizes?: string[];
   availableColors?: string[];
   availableModels?: string[];

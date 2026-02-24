@@ -1,15 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ensureAdmin } from "@/lib/auth/admin-guard";
-import { 
-  isImportDbConfigured, 
-  testImportDbConnection, 
-  createImportBatch, 
-  addProductToQueue, 
+import {
+  isImportDbConfigured,
+  testImportDbConnection,
+  createImportBatch,
+  addProductToQueue,
   logImportAction,
   getBatches,
   checkProductQueueSchema
 } from "@/lib/db/import-db";
 import { extractCjProductVideoUrl, normalizeCjVideoUrl } from "@/lib/cj/video";
+import { build4kVideoDelivery, requiresVideoForMediaMode } from "@/lib/video/delivery";
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -59,7 +60,8 @@ export async function POST(req: NextRequest) {
     console.log('[Import Batch] Schema verified, processing batch...');
     
     const body = await req.json();
-    const { name, keywords, category, filters, products } = body;
+    const { name, keywords, category, filters, products, mediaMode } = body;
+    const requiresVideo = requiresVideoForMediaMode(mediaMode);
     
     if (!products || !Array.isArray(products) || products.length === 0) {
       return NextResponse.json({ ok: false, error: "No products provided" }, { status: 400 });
@@ -98,6 +100,8 @@ export async function POST(req: NextRequest) {
 
     let addedCount = 0;
     let failedCount = 0;
+    let skippedMissingVideoCount = 0;
+    let skippedVideoQualityGateCount = 0;
     const failedProducts: string[] = [];
     const errorMessages: string[] = [];
     
@@ -125,6 +129,30 @@ export async function POST(req: NextRequest) {
       const extractedVideoUrl = extractCjProductVideoUrl(p);
       const fallbackVideoUrl = normalizeCjVideoUrl(p?.videoUrl || p?.video || p?.productVideo);
       const videoUrl = extractedVideoUrl || fallbackVideoUrl || undefined;
+      const videoDelivery = build4kVideoDelivery(videoUrl);
+      const deliverableVideoUrl = videoDelivery.qualityGatePassed ? videoDelivery.deliveryUrl : undefined;
+
+      if (requiresVideo && !videoDelivery.deliveryUrl) {
+        skippedMissingVideoCount++;
+        failedCount++;
+        failedProducts.push(productId);
+        if (errorMessages.length < 3) {
+          errorMessages.push(`Skipped product ${productId}: missing video for mediaMode=${String(mediaMode || 'unknown')}`);
+        }
+        continue;
+      }
+
+      if (requiresVideo && !videoDelivery.qualityGatePassed) {
+        skippedVideoQualityGateCount++;
+        failedCount++;
+        failedProducts.push(productId);
+        if (errorMessages.length < 3) {
+          errorMessages.push(
+            `Skipped product ${productId}: video quality gate failed (mode=${videoDelivery.mode}, sourceHint=${videoDelivery.sourceQualityHint}).`
+          );
+        }
+        continue;
+      }
 
       const result = await addProductToQueue(batch.id, {
         productId,
@@ -139,7 +167,13 @@ export async function POST(req: NextRequest) {
         packingList: p.packingList || undefined,
         category: p.categoryName || category || "General",
         images,
-        videoUrl,
+        videoUrl: deliverableVideoUrl,
+        videoSourceUrl: videoDelivery.sourceUrl,
+        video4kUrl: deliverableVideoUrl,
+        videoDeliveryMode: videoDelivery.mode,
+        videoQualityGatePassed: videoDelivery.qualityGatePassed,
+        videoSourceQualityHint: videoDelivery.sourceQualityHint,
+        mediaMode: typeof mediaMode === 'string' ? mediaMode : undefined,
         variants: p.variants || [],
         avgPrice,
         displayedRating: typeof p.displayedRating === 'number' ? p.displayedRating : undefined,
@@ -195,16 +229,28 @@ export async function POST(req: NextRequest) {
       const errorDetail = errorMessages.length > 0 
         ? ` First error: ${errorMessages[0]}`
         : '';
+      const mediaDetail = skippedMissingVideoCount > 0
+        ? ` ${skippedMissingVideoCount} products were excluded because media mode requires video.`
+        : '';
+      const qualityDetail = skippedVideoQualityGateCount > 0
+        ? ` ${skippedVideoQualityGateCount} products were excluded because video failed strict 4K quality gate.`
+        : '';
       return NextResponse.json({ 
         ok: false, 
-        error: `Failed to add any products to queue. ${failedCount} products failed.${errorDetail}`,
+        error: `Failed to add any products to queue. ${failedCount} products failed.${mediaDetail}${qualityDetail}${errorDetail}`,
         failedProducts: failedProducts.slice(0, 10),
-        errorDetails: errorMessages
+        errorDetails: errorMessages,
+        skippedMissingVideo: skippedMissingVideoCount,
+        skippedVideoQualityGate: skippedVideoQualityGateCount,
       }, { status: 500 });
     }
 
     await logImportAction(batch.id, "batch_created", "success", { 
       products_count: products.length, 
+      media_mode: mediaMode || 'any',
+      requires_video: requiresVideo,
+      skipped_missing_video: skippedMissingVideoCount,
+      skipped_video_quality_gate: skippedVideoQualityGateCount,
       keywords, 
       category 
     });
@@ -214,6 +260,8 @@ export async function POST(req: NextRequest) {
       batchId: batch.id,
       productsAdded: addedCount,
       productsFailed: failedCount,
+      productsSkippedMissingVideo: skippedMissingVideoCount,
+      productsSkippedVideoQualityGate: skippedVideoQualityGateCount,
       ...(failedCount > 0 && { warning: `${failedCount} products failed to add` }),
     });
   } catch (e: any) {

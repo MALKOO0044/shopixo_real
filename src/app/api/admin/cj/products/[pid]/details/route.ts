@@ -8,6 +8,7 @@ import { hasTable } from '@/lib/db-features';
 import { computeRetailFromLanded, sarToUsd, usdToSar } from '@/lib/pricing';
 import { extractCjProductGalleryImages, normalizeCjImageKey, prioritizeCjHeroImage } from '@/lib/cj/image-gallery';
 import { extractCjProductVideoUrl } from '@/lib/cj/video';
+import { build4kVideoDelivery } from '@/lib/video/delivery';
 
 function getSupabaseAdmin() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -771,7 +772,12 @@ export async function GET(
     
     const originCountry = String(source.originCountry || source.countryOrigin || '').trim() || undefined;
     const hsCode = source.entryCode ? `${source.entryCode}${source.entryNameEn ? ` (${source.entryNameEn})` : ''}` : undefined;
-    const videoUrl = extractCjProductVideoUrl(source);
+    const sourceVideoUrl = extractCjProductVideoUrl(source);
+    const videoDelivery = build4kVideoDelivery(sourceVideoUrl);
+    const hasDeliverableVideo =
+      typeof videoDelivery.deliveryUrl === 'string' &&
+      videoDelivery.deliveryUrl.length > 0 &&
+      videoDelivery.qualityGatePassed;
 
     // Compute internal rating from signals
     try {
@@ -860,7 +866,12 @@ export async function GET(
       estimatedDeliveryDays: deliveryParsed.display,
       originCountry,
       hsCode,
-      videoUrl,
+      videoUrl: hasDeliverableVideo ? videoDelivery.deliveryUrl : undefined,
+      videoSourceUrl: videoDelivery.sourceUrl,
+      video4kUrl: hasDeliverableVideo ? videoDelivery.deliveryUrl : undefined,
+      videoDeliveryMode: videoDelivery.mode,
+      videoQualityGatePassed: videoDelivery.qualityGatePassed,
+      videoSourceQualityHint: videoDelivery.sourceQualityHint,
       availableSizes: extractedSizes.length > 0 ? extractedSizes : undefined,
       availableColors: extractedColors.length > 0 ? extractedColors : undefined,
       availableModels: extractedModels.length > 0 ? extractedModels : undefined,

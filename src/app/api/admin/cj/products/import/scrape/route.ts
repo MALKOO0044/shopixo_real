@@ -6,6 +6,7 @@ import { createClient } from '@supabase/supabase-js';
 import { slugify } from '@/lib/utils/slug';
 import { ensureAdmin } from '@/lib/auth/admin-guard';
 import { isKillSwitchOn } from '@/lib/settings';
+import { build4kVideoDelivery } from '@/lib/video/delivery';
 
 // Ensure this route is always dynamic and not cached at the edge
 export const dynamic = 'force-dynamic';
@@ -193,6 +194,7 @@ export async function GET(req: Request) {
 
     const priceParam = Number(searchParams.get('price') || NaN);
     const defaultPrice = Math.max(1, Number(process.env.DEFAULT_SCRAPE_PRICE_SAR || '69'));
+    const mediaModeParam = (searchParams.get('mediaMode') || '').trim();
 
     const results: any[] = [];
 
@@ -203,6 +205,8 @@ export async function GET(req: Request) {
         const html = typeof meta.body === 'string' ? meta.body : '';
         if (!meta.ok || !html) throw new Error('Failed to fetch source page');
         const ext = extractFromHtml(html, u);
+        const videoDelivery = build4kVideoDelivery(ext.videoUrl || undefined);
+        const deliverableVideoUrl = videoDelivery.qualityGatePassed ? videoDelivery.deliveryUrl : undefined;
 
         const baseSlug = await ensureUniqueSlug(supabase, ext.title);
         const productPayload: any = {
@@ -217,7 +221,15 @@ export async function GET(req: Request) {
         // Add optional fields that we will prune if absent
         productPayload.description = '';
         productPayload.images = ext.images;
-        productPayload.video_url = ext.videoUrl || null;
+        productPayload.video_url = deliverableVideoUrl || null;
+        productPayload.video_source_url = videoDelivery.sourceUrl || null;
+        productPayload.video_4k_url = deliverableVideoUrl || null;
+        productPayload.video_delivery_mode = videoDelivery.mode;
+        productPayload.video_quality_gate_passed = videoDelivery.qualityGatePassed;
+        productPayload.video_source_quality_hint = videoDelivery.sourceQualityHint;
+        productPayload.media_mode = mediaModeParam || null;
+        productPayload.has_video = Boolean(deliverableVideoUrl);
+        productPayload.cj_product_id = ext.numericId || null;
         productPayload.processing_time_hours = null;
         productPayload.delivery_time_hours = null;
         productPayload.origin_area = null;
@@ -225,13 +237,21 @@ export async function GET(req: Request) {
         productPayload.free_shipping = true;
         productPayload.inventory_shipping_fee = 0;
         productPayload.last_mile_fee = 0;
-        productPayload.cj_product_id = ext.numericId || null;
         productPayload.shipping_from = null;
         productPayload.is_active = (productPayload.price > 0);
 
         // Omit optional columns that may not exist in this schema
         await omitMissingProductColumns(supabase, productPayload, [
+          'cj_product_id',
+          'is_active',
           'video_url',
+          'video_source_url',
+          'video_4k_url',
+          'video_delivery_mode',
+          'video_quality_gate_passed',
+          'video_source_quality_hint',
+          'media_mode',
+          'has_video',
           'processing_time_hours',
           'delivery_time_hours',
           'origin_area',
@@ -300,9 +320,10 @@ export async function GET(req: Request) {
         delete optionalUpdate.stock;
 
         await omitMissingProductColumns(supabase, optionalUpdate, [
-          'images', 'description', 'video_url', 'processing_time_hours', 'delivery_time_hours', 'origin_area',
-          'origin_country_code', 'free_shipping', 'inventory_shipping_fee', 'last_mile_fee', 'shipping_from',
-          'cj_product_id', 'is_active'
+          'images', 'description', 'video_url', 'video_source_url', 'video_4k_url', 'video_delivery_mode',
+          'video_quality_gate_passed', 'video_source_quality_hint', 'media_mode', 'has_video', 'processing_time_hours',
+          'delivery_time_hours', 'origin_area', 'origin_country_code', 'free_shipping', 'inventory_shipping_fee',
+          'last_mile_fee', 'shipping_from', 'cj_product_id', 'is_active'
         ]);
         const keysLeft = Object.keys(optionalUpdate);
         if (keysLeft.length > 0) {

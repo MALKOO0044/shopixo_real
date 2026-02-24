@@ -22,6 +22,12 @@ type ImportItem = {
   weightKg?: number;
   imagesCsv?: string;          // comma-separated URLs (required by schema)
   videoUrl?: string;           // optional single video URL if available from CJ
+  videoSourceUrl?: string;
+  video4kUrl?: string;
+  videoDeliveryMode?: 'native' | 'enhanced' | 'passthrough';
+  videoQualityGatePassed?: boolean;
+  videoSourceQualityHint?: '4k' | 'hd' | 'sd' | 'unknown';
+  mediaMode?: string;
   category?: string;           // optional
   stock?: number;              // default 100
   margin?: number;             // default 0.35
@@ -53,8 +59,26 @@ export async function POST(req: NextRequest) {
     return r;
   }
 
-  // Probe optional columns once (e.g., products.video_url) using centralized db-features
-  const hasVideoColumn = await hasColumn('products', 'video_url');
+  // Probe optional media columns once using centralized db-features
+  const [
+    hasVideoColumn,
+    hasVideoSourceColumn,
+    hasVideo4kColumn,
+    hasVideoDeliveryModeColumn,
+    hasVideoQualityGateColumn,
+    hasVideoSourceQualityHintColumn,
+    hasMediaModeColumn,
+    hasHasVideoColumn,
+  ] = await Promise.all([
+    hasColumn('products', 'video_url'),
+    hasColumn('products', 'video_source_url'),
+    hasColumn('products', 'video_4k_url'),
+    hasColumn('products', 'video_delivery_mode'),
+    hasColumn('products', 'video_quality_gate_passed'),
+    hasColumn('products', 'video_source_quality_hint'),
+    hasColumn('products', 'media_mode'),
+    hasColumn('products', 'has_video'),
+  ]);
 
   let body: { items: ImportItem[]; preview?: boolean; draftOnAnomalies?: boolean };
   try { body = await req.json(); } catch {
@@ -147,10 +171,35 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
-    // Include optional video_url in insertion only if the DB column exists
-    const insertRow = hasVideoColumn && it.videoUrl
-      ? { ...validated.data, video_url: it.videoUrl }
-      : validated.data;
+    // Include optional video delivery fields only when corresponding DB columns exist
+    const insertRow: Record<string, unknown> = { ...validated.data };
+    const canonicalVideoUrl = typeof it.videoUrl === 'string' && it.videoUrl.trim().length > 0
+      ? it.videoUrl
+      : (typeof it.video4kUrl === 'string' && it.video4kUrl.trim().length > 0 ? it.video4kUrl : undefined);
+    if (hasVideoColumn && canonicalVideoUrl) {
+      insertRow.video_url = canonicalVideoUrl;
+    }
+    if (hasVideoSourceColumn && typeof it.videoSourceUrl === 'string') {
+      insertRow.video_source_url = it.videoSourceUrl;
+    }
+    if (hasVideo4kColumn && typeof it.video4kUrl === 'string') {
+      insertRow.video_4k_url = it.video4kUrl;
+    }
+    if (hasVideoDeliveryModeColumn && typeof it.videoDeliveryMode === 'string') {
+      insertRow.video_delivery_mode = it.videoDeliveryMode;
+    }
+    if (hasVideoQualityGateColumn && typeof it.videoQualityGatePassed === 'boolean') {
+      insertRow.video_quality_gate_passed = it.videoQualityGatePassed;
+    }
+    if (hasVideoSourceQualityHintColumn && typeof it.videoSourceQualityHint === 'string') {
+      insertRow.video_source_quality_hint = it.videoSourceQualityHint;
+    }
+    if (hasMediaModeColumn && typeof it.mediaMode === 'string') {
+      insertRow.media_mode = it.mediaMode;
+    }
+    if (hasHasVideoColumn) {
+      insertRow.has_video = Boolean(canonicalVideoUrl);
+    }
     toInsert.push(insertRow);
     results.push({
       title,

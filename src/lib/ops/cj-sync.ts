@@ -69,6 +69,15 @@ export async function upsertProductFromCj(cj: CjProductLike, options: UpsertOpti
     const optional: Record<string, any> = {
       images: options.updateImages ? (cj.images || []) : undefined,
       video_url: options.updateVideo ? (cj.videoUrl || null) : undefined,
+      video_source_url: options.updateVideo ? (cj.videoSourceUrl || null) : undefined,
+      video_4k_url: options.updateVideo ? (cj.video4kUrl || null) : undefined,
+      video_delivery_mode: options.updateVideo ? (cj.videoDeliveryMode || null) : undefined,
+      video_quality_gate_passed:
+        options.updateVideo
+          ? (typeof cj.videoQualityGatePassed === 'boolean' ? cj.videoQualityGatePassed : null)
+          : undefined,
+      video_source_quality_hint: options.updateVideo ? (cj.videoSourceQualityHint || null) : undefined,
+      has_video: options.updateVideo ? Boolean(cj.video4kUrl || cj.videoUrl) : undefined,
       is_active: true,
       cj_product_id: cj.productId,
       processing_time_hours: (cj as any).processingTimeHours ?? null,

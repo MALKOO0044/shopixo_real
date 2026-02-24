@@ -4,7 +4,7 @@ import { queryProductByPidOrKeyword, mapCjItemToProductLike, type CjProductLike 
 import { slugify } from '@/lib/utils/slug';
 import { ensureAdmin } from '@/lib/auth/admin-guard';
 import { loggerForRequest } from '@/lib/log';
-import { hasTable } from '@/lib/db-features';
+import { hasColumn, hasTable } from '@/lib/db-features';
 import { isKillSwitchOn } from '@/lib/settings';
 
 export const dynamic = 'force-dynamic';
@@ -60,6 +60,7 @@ export async function GET(req: Request) {
     const keywordsParam = searchParams.get('keywords') || '';
     const limit = Math.max(1, Math.min(10, Number(searchParams.get('limit') || '2')));
     const categoryParam = (searchParams.get('category') || 'General').trim();
+    const mediaModeParam = (searchParams.get('mediaMode') || '').trim();
 
     const keywords = keywordsParam
       .split(',')
@@ -117,6 +118,24 @@ export async function GET(req: Request) {
     const results: any[] = [];
 
     const hasVariantsTable = await hasTable('product_variants');
+    const productOptionalColumns = [
+      'is_active',
+      'video_url',
+      'video_source_url',
+      'video_4k_url',
+      'video_delivery_mode',
+      'video_quality_gate_passed',
+      'video_source_quality_hint',
+      'media_mode',
+      'has_video',
+    ] as const;
+    const optionalColumnSet = new Set<string>();
+    const optionalColumnResults = await Promise.all(
+      productOptionalColumns.map(async (col) => ({ col, exists: await hasColumn('products', col).catch(() => false) }))
+    );
+    for (const result of optionalColumnResults) {
+      if (result.exists) optionalColumnSet.add(result.col);
+    }
 
     for (const cj of selected) {
       try {
@@ -141,6 +160,14 @@ export async function GET(req: Request) {
           category: categoryParam,
           stock: totalStock,
           video_url: cj.videoUrl || null,
+          video_source_url: cj.videoSourceUrl || null,
+          video_4k_url: cj.video4kUrl || null,
+          video_delivery_mode: cj.videoDeliveryMode || null,
+          video_quality_gate_passed:
+            typeof cj.videoQualityGatePassed === 'boolean' ? cj.videoQualityGatePassed : null,
+          video_source_quality_hint: cj.videoSourceQualityHint || null,
+          media_mode: mediaModeParam || null,
+          has_video: Boolean(cj.video4kUrl || cj.videoUrl),
           processing_time_hours: null,
           delivery_time_hours: cj.deliveryTimeHours ?? null,
           origin_area: cj.originArea ?? null,
@@ -163,6 +190,12 @@ export async function GET(req: Request) {
         } catch {
           const { is_active, ...rest } = productPayload;
           productPayload = rest;
+        }
+
+        for (const col of productOptionalColumns) {
+          if (!optionalColumnSet.has(col) && col in productPayload) {
+            delete productPayload[col];
+          }
         }
 
         let productId: number;

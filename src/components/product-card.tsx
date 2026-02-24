@@ -192,6 +192,7 @@ function getImageField(p: Pick<Product, "images" | "image">): Product["images"] 
 
 export default function ProductCard({ product }: { product: Product }) {
   const rating = normalizeDisplayedRating(product.displayed_rating);
+  const hasVideo = Boolean((product as any).video_4k_url || product.video_url || (product as any).has_video);
   return (
     <Link
       href={`/product/${product.slug || product.id}`}
@@ -213,7 +214,7 @@ export default function ProductCard({ product }: { product: Product }) {
             />
           );
         })()}
-        {!!product.video_url && (
+        {hasVideo && (
           <div className="absolute left-2 top-2 rounded-full bg-black/60 text-white px-2 py-1 text-[11px] flex items-center gap-1">
             <PlayCircle className="h-3.5 w-3.5" />
             <span>Video</span>

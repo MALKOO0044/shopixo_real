@@ -50,6 +50,13 @@ type QueueProduct = {
   available_sizes?: string[];
   variant_pricing?: any[] | string | null;
   video_url?: string | null;
+  video_source_url?: string | null;
+  video_4k_url?: string | null;
+  video_delivery_mode?: 'native' | 'enhanced' | 'passthrough' | null;
+  video_quality_gate_passed?: boolean | null;
+  video_source_quality_hint?: '4k' | 'hd' | 'sd' | 'unknown' | null;
+  media_mode?: string | null;
+  has_video?: boolean | null;
 };
 
 function parseQueueVariantPricing(value: QueueProduct["variant_pricing"]): any[] {
@@ -115,7 +122,17 @@ function resolveQueueStoreSku(product: QueueProduct): string {
 }
 
 function hasQueueVideo(product: QueueProduct): boolean {
-  return typeof product.video_url === "string" && product.video_url.trim().length > 0;
+  const primary = typeof product.video_4k_url === "string" ? product.video_4k_url.trim() : "";
+  const fallback = typeof product.video_url === "string" ? product.video_url.trim() : "";
+  return primary.length > 0 || fallback.length > 0 || product.has_video === true;
+}
+
+function getQueueVideoUrl(product: QueueProduct): string | null {
+  const primary = typeof product.video_4k_url === "string" ? product.video_4k_url.trim() : "";
+  if (primary) return primary;
+
+  const fallback = typeof product.video_url === "string" ? product.video_url.trim() : "";
+  return fallback || null;
 }
 
 type Stats = {
@@ -627,7 +644,8 @@ export default function QueuePage() {
                 const displayRetailUsd = resolveQueueDisplayPriceUsd(product);
                 const displayMarginPercent = resolveQueueMarginPercent(product);
                 const displayStoreSku = resolveQueueStoreSku(product);
-                
+                const queueVideoUrl = getQueueVideoUrl(product);
+
                 return editingId === product.id ? (
                   <tr key={product.id} className="bg-blue-50">
                     <td colSpan={10} className="px-4 py-4">
@@ -736,9 +754,9 @@ export default function QueuePage() {
                           </div>
                         )}
 
-                        {hasQueueVideo(product) && (
+                        {queueVideoUrl && (
                           <a
-                            href={product.video_url as string}
+                            href={queueVideoUrl}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="absolute bottom-1 left-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white"
@@ -752,10 +770,21 @@ export default function QueuePage() {
                     <td className="px-4 py-3">
                       <p className="font-medium text-gray-900 line-clamp-2">{product.name_en}</p>
                       {hasQueueVideo(product) && (
-                        <span className="inline-flex items-center gap-1 text-[11px] text-blue-700">
-                          <Play className="h-3 w-3" />
-                          Video available
-                        </span>
+                        <div className="space-y-0.5">
+                          <span className="inline-flex items-center gap-1 text-[11px] text-blue-700">
+                            <Play className="h-3 w-3" />
+                            {product.video_4k_url ? '4K video ready' : 'Video available'}
+                          </span>
+                          {product.video_delivery_mode && (
+                            <span className="block text-[10px] text-gray-500">
+                              Delivery mode: {product.video_delivery_mode}
+                              {product.video_source_quality_hint ? ` · Source hint: ${product.video_source_quality_hint.toUpperCase()}` : ''}
+                              {typeof product.video_quality_gate_passed === 'boolean'
+                                ? ` · Gate: ${product.video_quality_gate_passed ? 'passed' : 'failed'}`
+                                : ''}
+                            </span>
+                          )}
+                        </div>
                       )}
                       <span className="block font-mono text-xs text-emerald-700" title={displayStoreSku}>
                         Store SKU: {displayStoreSku}

@@ -6,6 +6,7 @@ import { linkProductToMultipleCategories } from "@/lib/category-intelligence";
 import { computeRating, normalizeDisplayedRating } from "@/lib/rating/engine";
 import { sarToUsd } from "@/lib/pricing";
 import { normalizeCjImageKey, prioritizeCjHeroImage } from "@/lib/cj/image-gallery";
+import { requiresVideoForMediaMode } from "@/lib/video/delivery";
 
 // Helper to find category by name/slug/CJ-link and link product to category hierarchy
 async function linkProductToCategory(admin: any, productId: number, categoryName: string, cjCategoryId?: string, supabaseCategoryId?: number): Promise<boolean> {
@@ -552,6 +553,13 @@ export async function POST(req: NextRequest) {
       'size_info',
       'product_note',
       'packing_list',
+      'video_url',
+      'video_source_url',
+      'video_4k_url',
+      'video_delivery_mode',
+      'video_quality_gate_passed',
+      'video_source_quality_hint',
+      'media_mode',
       'available_colors',
       'available_sizes',
       'color_image_map',
@@ -577,6 +585,13 @@ export async function POST(req: NextRequest) {
       'size_info',
       'product_note',
       'packing_list',
+      'video_url',
+      'video_source_url',
+      'video_4k_url',
+      'video_delivery_mode',
+      'video_quality_gate_passed',
+      'video_source_quality_hint',
+      'media_mode',
       'available_colors',
       'available_sizes',
       'color_image_map',
@@ -611,6 +626,32 @@ export async function POST(req: NextRequest) {
           const variantIdentifier = v?.variantSku || v?.cjSku || v?.variantId || v?.vid;
           requireField(variantIdentifier, 'variantIdentifier');
         }
+
+        const queueMediaMode = typeof qp.media_mode === 'string' ? qp.media_mode : null;
+        const queueVideoUrl = typeof qp.video_url === 'string' ? qp.video_url.trim() : '';
+        const queueVideo4kUrl = typeof qp.video_4k_url === 'string' ? qp.video_4k_url.trim() : '';
+        const queueQualityGatePassed =
+          typeof qp.video_quality_gate_passed === 'boolean'
+            ? qp.video_quality_gate_passed
+            : Boolean(queueVideo4kUrl);
+        const queueHasDeliverableVideo = queueVideoUrl.length > 0 && queueQualityGatePassed;
+        if (requiresVideoForMediaMode(queueMediaMode) && !queueHasDeliverableVideo) {
+          const reason = queueVideoUrl
+            ? `Excluded from import: media mode ${queueMediaMode} requires 4K-deliverable video, but queue product failed video quality gate.`
+            : `Excluded from import: media mode ${queueMediaMode} requires video, but queue product has no video_url.`;
+          await admin
+            .from('product_queue')
+            .update({
+              status: 'rejected',
+              admin_notes: reason,
+              reviewed_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', qp.id);
+          results.push({ id: qp.id, success: false, error: reason });
+          continue;
+        }
+
         let existing: any = null;
         if (hasCjProductIdColumn) {
           const { data } = await admin
@@ -784,7 +825,17 @@ export async function POST(req: NextRequest) {
           packing_list: qp.packing_list ?? null,
           images: finalImages,
           video_url: qp.video_url || null,
-          has_video: typeof qp.has_video === 'boolean' ? qp.has_video : (qp.video_url ? true : null),
+          video_source_url: qp.video_source_url || null,
+          video_4k_url: qp.video_4k_url || null,
+          video_delivery_mode: qp.video_delivery_mode || null,
+          video_quality_gate_passed:
+            typeof qp.video_quality_gate_passed === 'boolean' ? qp.video_quality_gate_passed : null,
+          video_source_quality_hint: qp.video_source_quality_hint || null,
+          media_mode: qp.media_mode || null,
+          has_video:
+            typeof qp.has_video === 'boolean'
+              ? qp.has_video
+              : (qp.video_4k_url || qp.video_url ? true : null),
           product_code: qp.product_code || null,
           is_active: null,
           cj_product_id: qp.cj_product_id,
@@ -827,6 +878,7 @@ export async function POST(req: NextRequest) {
 
         await omitMissingColumns(optionalFields, [
           'description', 'images', 'video_url', 'has_video', 'product_code', 'is_active', 'cj_product_id',
+          'video_source_url', 'video_4k_url', 'video_delivery_mode', 'video_quality_gate_passed', 'video_source_quality_hint', 'media_mode',
           'free_shipping', 'processing_time_hours', 'delivery_time_hours',
           'supplier_sku', 'variants', 'weight_g', 'weight_grams', 'pack_length', 'pack_width', 
           'pack_height', 'material', 'product_type', 'origin_country', 'origin_country_code', 'hs_code',

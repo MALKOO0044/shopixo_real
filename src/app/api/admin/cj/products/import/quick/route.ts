@@ -126,6 +126,7 @@ export async function GET(req: Request) {
     // Optional pricing params
     const marginPct = Math.max(0, Number(searchParams.get('marginPct') || '0'));
     const shippingSar = Math.max(0, Number(searchParams.get('shippingSar') || '0'));
+    const mediaModeParam = (searchParams.get('mediaMode') || '').trim();
 
     // 1) Fetch CJ items by PID
     const fetched: CjProductLike[] = [];
@@ -190,6 +191,14 @@ export async function GET(req: Request) {
           description: '',
           images: cj.images || [],
           video_url: cj.videoUrl || null,
+          video_source_url: cj.videoSourceUrl || null,
+          video_4k_url: cj.video4kUrl || null,
+          video_delivery_mode: cj.videoDeliveryMode || null,
+          video_quality_gate_passed:
+            typeof cj.videoQualityGatePassed === 'boolean' ? cj.videoQualityGatePassed : null,
+          video_source_quality_hint: cj.videoSourceQualityHint || null,
+          media_mode: mediaModeParam || null,
+          has_video: Boolean(cj.video4kUrl || cj.videoUrl),
           processing_time_hours: null,
           delivery_time_hours: cj.deliveryTimeHours ?? null,
           origin_area: cj.originArea ?? null,
@@ -204,8 +213,9 @@ export async function GET(req: Request) {
 
         // Prune optional fields that do not exist in schema
         await omitMissingProductColumns(supabase, optional, [
-          'description','images','video_url','processing_time_hours','delivery_time_hours','origin_area','origin_country_code',
-          'free_shipping','inventory_shipping_fee','last_mile_fee','shipping_from','cj_product_id','is_active'
+          'description','images','video_url','video_source_url','video_4k_url','video_delivery_mode','video_quality_gate_passed',
+          'video_source_quality_hint','media_mode','has_video','processing_time_hours','delivery_time_hours','origin_area',
+          'origin_country_code','free_shipping','inventory_shipping_fee','last_mile_fee','shipping_from','cj_product_id','is_active'
         ]);
 
         let productId: number;

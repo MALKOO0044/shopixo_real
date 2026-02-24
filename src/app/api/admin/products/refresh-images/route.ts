@@ -4,6 +4,9 @@ import { ensureAdmin } from '@/lib/auth/admin-guard';
 import { fetchProductDetailsByPid, getAccessToken } from '@/lib/cj/v2';
 import { fetchJson } from '@/lib/http';
 import { extractCjProductGalleryImages } from '@/lib/cj/image-gallery';
+import { extractCjProductVideoUrl } from '@/lib/cj/video';
+import { build4kVideoDelivery } from '@/lib/video/delivery';
+import { hasColumn } from '@/lib/db-features';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -57,10 +60,17 @@ async function fetchProductByVariantSku(variantSku: string): Promise<any | null>
 async function refreshProductImages(
   supabase: any,
   productId: number
-): Promise<{ success: boolean; imagesCount: number; error?: string }> {
+): Promise<{
+  success: boolean;
+  imagesCount: number;
+  videoUpdated?: boolean;
+  videoDeliveryMode?: 'native' | 'enhanced' | 'passthrough';
+  videoQualityGatePassed?: boolean;
+  error?: string;
+}> {
   const { data: product, error: fetchError } = await supabase
     .from('products')
-    .select('id, title, cj_product_id, supplier_sku, images')
+    .select('id, title, cj_product_id, supplier_sku, images, video_url')
     .eq('id', productId)
     .single();
   
@@ -95,6 +105,8 @@ async function refreshProductImages(
   }
   
   const allImages = extractAllImages(cjDetails);
+  const sourceVideoUrl = extractCjProductVideoUrl(cjDetails);
+  const videoDelivery = build4kVideoDelivery(sourceVideoUrl);
   
   if (allImages.length === 0) {
     return { 
@@ -104,12 +116,63 @@ async function refreshProductImages(
     };
   }
   
+  const productColumns = await Promise.all([
+    hasColumn('products', 'video_url').catch(() => false),
+    hasColumn('products', 'video_source_url').catch(() => false),
+    hasColumn('products', 'video_4k_url').catch(() => false),
+    hasColumn('products', 'video_delivery_mode').catch(() => false),
+    hasColumn('products', 'video_quality_gate_passed').catch(() => false),
+    hasColumn('products', 'video_source_quality_hint').catch(() => false),
+    hasColumn('products', 'media_mode').catch(() => false),
+    hasColumn('products', 'has_video').catch(() => false),
+  ]);
+
+  const [
+    hasVideoUrl,
+    hasVideoSourceUrl,
+    hasVideo4kUrl,
+    hasVideoDeliveryMode,
+    hasVideoQualityGate,
+    hasVideoSourceQualityHint,
+    hasMediaMode,
+    hasHasVideo,
+  ] = productColumns;
+
+  const updatePayload: Record<string, unknown> = {
+    images: allImages,
+    updated_at: new Date().toISOString(),
+  };
+
+  const hasVideoCandidate = typeof videoDelivery.deliveryUrl === 'string' && videoDelivery.deliveryUrl.length > 0;
+  const shouldUpdateVideo = hasVideoCandidate && videoDelivery.qualityGatePassed;
+  if (hasVideoUrl) {
+    updatePayload.video_url = shouldUpdateVideo ? videoDelivery.deliveryUrl : null;
+  }
+  if (hasVideoSourceUrl) {
+    updatePayload.video_source_url = hasVideoCandidate ? (videoDelivery.sourceUrl || null) : null;
+  }
+  if (hasVideo4kUrl) {
+    updatePayload.video_4k_url = shouldUpdateVideo ? videoDelivery.deliveryUrl : null;
+  }
+  if (hasVideoDeliveryMode) {
+    updatePayload.video_delivery_mode = hasVideoCandidate ? videoDelivery.mode : null;
+  }
+  if (hasVideoQualityGate) {
+    updatePayload.video_quality_gate_passed = hasVideoCandidate ? videoDelivery.qualityGatePassed : false;
+  }
+  if (hasVideoSourceQualityHint) {
+    updatePayload.video_source_quality_hint = hasVideoCandidate ? videoDelivery.sourceQualityHint : 'unknown';
+  }
+  if (hasMediaMode) {
+    updatePayload.media_mode = null;
+  }
+  if (hasHasVideo) {
+    updatePayload.has_video = shouldUpdateVideo;
+  }
+
   const { error: updateError } = await supabase
     .from('products')
-    .update({ 
-      images: allImages,
-      updated_at: new Date().toISOString()
-    })
+    .update(updatePayload)
     .eq('id', productId);
   
   if (updateError) {
@@ -118,7 +181,13 @@ async function refreshProductImages(
   
   console.log(`[Refresh Images] Product ${productId} "${(product as any).title}": ${allImages.length} images synced`);
   
-  return { success: true, imagesCount: allImages.length };
+  return {
+    success: true,
+    imagesCount: allImages.length,
+    videoUpdated: shouldUpdateVideo,
+    videoDeliveryMode: shouldUpdateVideo ? videoDelivery.mode : undefined,
+    videoQualityGatePassed: shouldUpdateVideo ? videoDelivery.qualityGatePassed : undefined,
+  };
 }
 
 export async function POST(req: Request) {
@@ -156,7 +225,15 @@ export async function POST(req: Request) {
         );
       }
       
-      const results: { id: number; success: boolean; imagesCount: number; error?: string }[] = [];
+      const results: {
+        id: number;
+        success: boolean;
+        imagesCount: number;
+        videoUpdated?: boolean;
+        videoDeliveryMode?: 'native' | 'enhanced' | 'passthrough';
+        videoQualityGatePassed?: boolean;
+        error?: string;
+      }[] = [];
       
       for (const p of (products || [])) {
         const result = await refreshProductImages(supabase, p.id);
@@ -179,7 +256,15 @@ export async function POST(req: Request) {
     }
     
     if (Array.isArray(productIds) && productIds.length > 0) {
-      const results: { id: number; success: boolean; imagesCount: number; error?: string }[] = [];
+      const results: {
+        id: number;
+        success: boolean;
+        imagesCount: number;
+        videoUpdated?: boolean;
+        videoDeliveryMode?: 'native' | 'enhanced' | 'passthrough';
+        videoQualityGatePassed?: boolean;
+        error?: string;
+      }[] = [];
       
       for (const id of productIds) {
         const result = await refreshProductImages(supabase, Number(id));

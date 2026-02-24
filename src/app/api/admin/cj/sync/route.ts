@@ -58,7 +58,22 @@ export async function GET(req: Request) {
     const cjCurrency = (searchParams.get('cjCurrency') || 'USD').toUpperCase(); // USD | SAR
 
     const hasVariants = await productVariantsTableExists(supabase);
-    const hasVideoCol = await hasColumn('products', 'video_url').catch(() => false);
+    const productVideoColumns = [
+      'video_url',
+      'video_source_url',
+      'video_4k_url',
+      'video_delivery_mode',
+      'video_quality_gate_passed',
+      'video_source_quality_hint',
+      'has_video',
+    ] as const;
+    const availableVideoColumns = new Set<string>();
+    const videoColumnResults = await Promise.all(
+      productVideoColumns.map(async (col) => ({ col, exists: await hasColumn('products', col).catch(() => false) }))
+    );
+    for (const result of videoColumnResults) {
+      if (result.exists) availableVideoColumns.add(result.col);
+    }
 
     let products: any[] = [];
     if (idsCsv) {
@@ -180,8 +195,29 @@ export async function GET(req: Request) {
         if (updateImages && Array.isArray(cj.images) && cj.images.length > 0) {
           update.images = cj.images;
         }
-        if (updateVideo && hasVideoCol) {
-          update.video_url = cj.videoUrl || null;
+        if (updateVideo) {
+          if (availableVideoColumns.has('video_url')) {
+            update.video_url = cj.videoUrl || null;
+          }
+          if (availableVideoColumns.has('video_source_url')) {
+            update.video_source_url = cj.videoSourceUrl || null;
+          }
+          if (availableVideoColumns.has('video_4k_url')) {
+            update.video_4k_url = cj.video4kUrl || null;
+          }
+          if (availableVideoColumns.has('video_delivery_mode')) {
+            update.video_delivery_mode = cj.videoDeliveryMode || null;
+          }
+          if (availableVideoColumns.has('video_quality_gate_passed')) {
+            update.video_quality_gate_passed =
+              typeof cj.videoQualityGatePassed === 'boolean' ? cj.videoQualityGatePassed : null;
+          }
+          if (availableVideoColumns.has('video_source_quality_hint')) {
+            update.video_source_quality_hint = cj.videoSourceQualityHint || null;
+          }
+          if (availableVideoColumns.has('has_video')) {
+            update.has_video = Boolean(cj.video4kUrl || cj.videoUrl);
+          }
         }
         // Product-level shipping metadata (best-effort)
         if (typeof (cj as any).deliveryTimeHours === 'number') {

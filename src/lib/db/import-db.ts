@@ -38,6 +38,12 @@ export async function checkProductQueueSchema(): Promise<{
   // ALL extended columns that addProductToQueue requires
   const requiredColumns = [
     { name: 'video_url', type: 'TEXT', default: 'NULL' },
+    { name: 'video_source_url', type: 'TEXT', default: 'NULL' },
+    { name: 'video_4k_url', type: 'TEXT', default: 'NULL' },
+    { name: 'video_delivery_mode', type: 'TEXT', default: 'NULL' },
+    { name: 'video_quality_gate_passed', type: 'BOOLEAN', default: 'NULL' },
+    { name: 'video_source_quality_hint', type: 'TEXT', default: 'NULL' },
+    { name: 'media_mode', type: 'TEXT', default: 'NULL' },
     { name: 'has_video', type: 'BOOLEAN', default: 'false' },
     { name: 'product_code', type: 'TEXT', default: 'NULL' },
     { name: 'weight_g', type: 'NUMERIC', default: 'NULL' },
@@ -172,6 +178,12 @@ export async function addProductToQueue(batchId: number, product: {
   category: string;
   images: string[];
   videoUrl?: string;
+  videoSourceUrl?: string;
+  video4kUrl?: string;
+  videoDeliveryMode?: 'native' | 'enhanced' | 'passthrough';
+  videoQualityGatePassed?: boolean;
+  videoSourceQualityHint?: '4k' | 'hd' | 'sd' | 'unknown';
+  mediaMode?: string;
   variants: any[];
   avgPrice: number;
   supplierRating?: number;
@@ -226,7 +238,10 @@ export async function addProductToQueue(batchId: number, product: {
   }
 
   const normalizedVideoUrl = normalizeCjVideoUrl(product.videoUrl);
-  const hasVideo = typeof normalizedVideoUrl === 'string' && normalizedVideoUrl.length > 0;
+  const normalizedVideoSourceUrl = normalizeCjVideoUrl(product.videoSourceUrl);
+  const normalizedVideo4kUrl = normalizeCjVideoUrl(product.video4kUrl);
+  const canonicalVideoUrl = normalizedVideoUrl || normalizedVideo4kUrl;
+  const hasVideo = typeof canonicalVideoUrl === 'string' && canonicalVideoUrl.length > 0;
   const admin = supabase as SupabaseClient;
 
   async function generateUniqueProductCode(client: SupabaseClient): Promise<string> {
@@ -355,7 +370,13 @@ export async function addProductToQueue(batchId: number, product: {
     profit_margin: product.profitMargin || null,
     color_image_map: product.colorImageMap || null,
     product_code: productCode,
-    video_url: normalizedVideoUrl || null,
+    video_url: canonicalVideoUrl || null,
+    video_source_url: normalizedVideoSourceUrl || null,
+    video_4k_url: normalizedVideo4kUrl || null,
+    video_delivery_mode: product.videoDeliveryMode || null,
+    video_quality_gate_passed: typeof product.videoQualityGatePassed === 'boolean' ? product.videoQualityGatePassed : null,
+    video_source_quality_hint: product.videoSourceQualityHint || null,
+    media_mode: product.mediaMode || null,
     has_video: hasVideo,
   };
   
