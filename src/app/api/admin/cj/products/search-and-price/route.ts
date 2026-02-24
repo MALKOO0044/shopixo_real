@@ -5,13 +5,22 @@ import { fetchJson } from '@/lib/http';
 import { loggerForRequest } from '@/lib/log';
 import { usdToSar, sarToUsd, computeRetailFromLanded } from '@/lib/pricing';
 import { computeRating } from '@/lib/rating/engine';
+import { createClient } from '@supabase/supabase-js';
 import { extractCjProductGalleryImages, normalizeCjImageKey, prioritizeCjHeroImage } from '@/lib/cj/image-gallery';
+import { normalizeSingleSize, normalizeSizeList } from '@/lib/cj/size-normalization';
 import { extractCjProductVideoCandidates, inferCjVideoQualityHint } from '@/lib/cj/video';
 import { build4kVideoDelivery } from '@/lib/video/delivery';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 export const runtime = 'nodejs';
+
+function getSupabaseAdmin() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) return null;
+  return createClient(url, key);
+}
 
 type ShippingOption = {
   name: string;
@@ -331,6 +340,9 @@ function extractVariantColorSize(variant: any, fallbackName?: string): { color?:
   let size = variant?.size || variant?.sizeNameEn || variant?.sizeName || undefined;
   let color = variant?.color || variant?.colour || variant?.colorNameEn || variant?.colorName || undefined;
 
+  const normalizedExplicitSize = normalizeSingleSize(size, { allowNumeric: false });
+  if (normalizedExplicitSize) size = normalizedExplicitSize;
+
   const variantKeyRaw = String(
     variant?.variantKey || variant?.variantNameEn || variant?.variantName || fallbackName || ''
   ).replace(/[\u4e00-\u9fff]/g, '').trim();
@@ -340,9 +352,9 @@ function extractVariantColorSize(variant: any, fallbackName?: string): { color?:
     if (parts.length >= 2) {
       const lastPart = parts[parts.length - 1];
       const firstPart = parts.slice(0, -1).join('-').trim();
-      const sizePattern = /^(XS|S|M|L|XL|XXL|XXXL|2XL|3XL|4XL|5XL|6XL|One Size|Free Size|\d{2,3})$/i;
-      if (sizePattern.test(lastPart)) {
-        if (!size) size = lastPart;
+      const normalizedFromKey = normalizeSingleSize(lastPart, { allowNumeric: false });
+      if (normalizedFromKey) {
+        if (!size) size = normalizedFromKey;
         if (!color) color = firstPart;
       } else if (!color) {
         color = variantKeyRaw;
@@ -354,9 +366,11 @@ function extractVariantColorSize(variant: any, fallbackName?: string): { color?:
     color = variantKeyRaw;
   }
 
+  const normalizedFinalSize = normalizeSingleSize(size, { allowNumeric: false });
+
   return {
     color: typeof color === 'string' && color.trim() ? color.trim() : undefined,
-    size: typeof size === 'string' && size.trim() ? size.trim() : undefined,
+    size: normalizedFinalSize || undefined,
   };
 }
 
@@ -504,7 +518,49 @@ async function handleSearch(req: Request, isPost: boolean) {
       return r;
     }
     
-    const requestedSizes = sizesParam ? sizesParam.split(',').map(s => s.trim().toUpperCase()).filter(Boolean) : [];
+    const requestedSizes = sizesParam
+      ? Array.from(
+          new Set(
+            sizesParam
+              .split(',')
+              .map((s) => normalizeSingleSize(s, { allowNumeric: false }))
+              .filter((s): s is string => !!s)
+          )
+        )
+      : [];
+
+    const queueExcludedPids = new Set<string>();
+    const storeExcludedPids = new Set<string>();
+    try {
+      const supabaseAdmin = getSupabaseAdmin();
+      if (supabaseAdmin) {
+        const [queueRowsRes, storeRowsRes] = await Promise.all([
+          supabaseAdmin.from('product_queue').select('cj_product_id').not('cj_product_id', 'is', null),
+          supabaseAdmin.from('products').select('cj_product_id').not('cj_product_id', 'is', null),
+        ]);
+
+        if (queueRowsRes.error) {
+          console.error('[Search&Price] Failed to load queue exclusions:', queueRowsRes.error);
+        } else {
+          for (const row of queueRowsRes.data || []) {
+            const pid = String((row as any)?.cj_product_id || '').trim();
+            if (pid) queueExcludedPids.add(pid);
+          }
+        }
+
+        if (storeRowsRes.error) {
+          console.error('[Search&Price] Failed to load store exclusions:', storeRowsRes.error);
+        } else {
+          for (const row of storeRowsRes.data || []) {
+            const pid = String((row as any)?.cj_product_id || '').trim();
+            if (pid) storeExcludedPids.add(pid);
+          }
+        }
+      }
+    } catch (e: any) {
+      console.error('[Search&Price] Failed to build exclusion sets:', e?.message || e);
+    }
+    const excludedPids = new Set<string>([...queueExcludedPids, ...storeExcludedPids]);
 
     console.log(`[Search&Price] ========================================`);
     console.log(`[Search&Price] Starting search with params:`);
@@ -521,6 +577,7 @@ async function handleSearch(req: Request, isPost: boolean) {
     console.log(`[Search&Price]   batchMode: ${isBatchMode}, batchSize: ${batchSize}`);
     console.log(`[Search&Price]   cursor: ${cursorParam} (cat=${cursorCatIdx}, page=${cursorPageNum}, offset=${cursorItemOffset})`);
     console.log(`[Search&Price]   seenPids: ${seenPidsFromClient.size} already processed`);
+    console.log(`[Search&Price]   excluded queue/store/total: ${queueExcludedPids.size}/${storeExcludedPids.size}/${excludedPids.size}`);
     console.log(`[Search&Price] ========================================`);
 
     const token = await getAccessToken();
@@ -537,6 +594,8 @@ async function handleSearch(req: Request, isPost: boolean) {
     const candidateProducts: any[] = [];
     const seenPids = new Set<string>();
     const startTime = Date.now();
+    let skippedByQueueExclusion = 0;
+    let skippedByStoreExclusion = 0;
     const mediaFilterStats = {
       mode: mediaMode,
       checked: 0,
@@ -641,6 +700,12 @@ async function handleSearch(req: Request, isPost: boolean) {
           const item = pageResult.list[itemIdx];
           const pid = String(item.pid || item.productId || '');
           if (!pid || seenPids.has(pid)) continue;
+
+          if (excludedPids.has(pid)) {
+            if (queueExcludedPids.has(pid)) skippedByQueueExclusion++;
+            if (storeExcludedPids.has(pid)) skippedByStoreExclusion++;
+            continue;
+          }
           
           // Skip PIDs already processed by previous batches (backup deduplication)
           if (isBatchMode && seenPidsFromClient.has(pid)) continue;
@@ -668,6 +733,7 @@ async function handleSearch(req: Request, isPost: boolean) {
     console.log(`[Search&Price]   Filtered by stock: ${totalFiltered.stock}`);
     console.log(`[Search&Price]   Filtered by popularity: ${totalFiltered.popularity}`);
     console.log(`[Search&Price]   Filtered by rating: ${totalFiltered.rating}`);
+    console.log(`[Search&Price]   Excluded by queue/store: ${skippedByQueueExclusion}/${skippedByStoreExclusion}`);
     console.log(`[Search&Price] ----------------------------------------`);
     
     if (candidateProducts.length === 0) {
@@ -682,6 +748,13 @@ async function handleSearch(req: Request, isPost: boolean) {
           categoriesSearched: categoryIds,
           totalSeen: seenPids.size,
           filtered: totalFiltered,
+          exclusion: {
+            excludedByQueue: queueExcludedPids.size,
+            excludedByStore: storeExcludedPids.size,
+            excludedTotal: excludedPids.size,
+            skippedByQueue: skippedByQueueExclusion,
+            skippedByStore: skippedByStoreExclusion,
+          },
           mediaFilter: mediaFilterStats,
         }
       }, { headers: { 'Cache-Control': 'no-store' } });
@@ -1691,10 +1764,6 @@ async function handleSearch(req: Request, isPost: boolean) {
         // Device model patterns (phones, tablets, etc.)
         const deviceModelPattern = /\b(iPhone\s*\d+\s*(?:Pro|Plus|Max|mini|SE)?(?:\s*Max)?|Samsung\s*(?:S|A|Note|Galaxy)\s*\d+(?:\s*(?:Plus|Ultra|FE))?|Xiaomi|Huawei|Redmi|OPPO|Vivo|OnePlus|Pixel|iPad|Galaxy\s*Tab)/i;
         
-        // Standard clothing/shoe size pattern
-        const clothingSizePattern = /^(XS|S|M|L|XL|XXL|XXXL|2XL|3XL|4XL|5XL|6XL|One Size|Free Size)$/i;
-        const shoeSizePattern = /^(EU\s*\d+|US\s*\d+|\d{2,3}(?:cm)?)$/i;
-        
         // Helper function to check if a string is a known color (use non-global regex to avoid lastIndex issues)
         const isColor = (s: string): boolean => {
           const lower = s.toLowerCase().trim();
@@ -1712,7 +1781,14 @@ async function handleSearch(req: Request, isPost: boolean) {
         
         // Helper function to check if a string is a clothing/shoe size
         const isClothingSize = (s: string): boolean => {
-          return clothingSizePattern.test(s.trim()) || shoeSizePattern.test(s.trim());
+          return !!normalizeSingleSize(s, { allowNumeric: false });
+        };
+
+        const addNormalizedSize = (rawValue: unknown) => {
+          const normalized = normalizeSingleSize(rawValue, { allowNumeric: false });
+          if (normalized) {
+            sizes.add(normalized);
+          }
         };
         
         // Helper to parse a combined value like "Violet-iPhone 11Pro Max"
@@ -1746,13 +1822,13 @@ async function handleSearch(req: Request, isPost: boolean) {
               if (isDeviceModel(remainder)) {
                 models.add(remainder);
               } else if (isClothingSize(remainder)) {
-                sizes.add(remainder.toUpperCase());
+                addNormalizedSize(remainder);
               } else {
                 // Could be a model or size - check further
                 if (/iPhone|Samsung|Xiaomi|Huawei|Redmi|OPPO|Vivo|OnePlus|Pixel|iPad|Galaxy/i.test(remainder)) {
                   models.add(remainder);
                 } else {
-                  sizes.add(remainder);
+                  addNormalizedSize(remainder);
                 }
               }
             }
@@ -1764,13 +1840,13 @@ async function handleSearch(req: Request, isPost: boolean) {
             } else if (isDeviceModel(val)) {
               models.add(val);
             } else if (isClothingSize(val)) {
-              sizes.add(val.toUpperCase());
+              addNormalizedSize(val);
             } else {
               // Unknown - check if it looks like a device
               if (/iPhone|Samsung|Xiaomi|Huawei|Redmi|OPPO|Vivo|OnePlus|Pixel|iPad|Galaxy/i.test(val)) {
                 models.add(val);
               } else {
-                sizes.add(val);
+                addNormalizedSize(val);
               }
             }
           }
@@ -1795,7 +1871,7 @@ async function handleSearch(req: Request, isPost: boolean) {
               if (isDeviceModel(cleanSize)) {
                 models.add(cleanSize);
               } else {
-                sizes.add(cleanSize);
+                addNormalizedSize(cleanSize);
               }
             }
           }
@@ -1827,7 +1903,7 @@ async function handleSearch(req: Request, isPost: boolean) {
                   if (isDeviceModel(cleanValue)) {
                     models.add(cleanValue);
                   } else {
-                    sizes.add(cleanValue);
+                    addNormalizedSize(cleanValue);
                   }
                 }
               }
@@ -1847,7 +1923,7 @@ async function handleSearch(req: Request, isPost: boolean) {
         // Sanitize values - strip any HTML/script tags
         const stripHtml = (s: string) => s.replace(/<[^>]*>/g, '').replace(/&[a-z]+;/gi, ' ').trim();
         const safeColors = [...colors].map(stripHtml).filter(c => c.length > 0 && c.length < 50);
-        const safeSizes = [...sizes].map(stripHtml).filter(s => s.length > 0 && s.length < 50);
+        const safeSizes = normalizeSizeList([...sizes].map(stripHtml), { allowNumeric: false });
         const safeModels = [...models].map(stripHtml).filter(m => m.length > 0 && m.length < 50);
         
         // Only add to specs if not already present (avoid duplicates)
@@ -2429,7 +2505,7 @@ async function handleSearch(req: Request, isPost: boolean) {
         // Products without sizes (e.g., electronics) pass through
         if (productSizes.length === 0) return true;
         // Check if any requested size matches product sizes
-        const normalizedProductSizes = productSizes.map((s: string) => s.toUpperCase());
+        const normalizedProductSizes = normalizeSizeList(productSizes, { allowNumeric: false });
         return requestedSizes.some(rs => normalizedProductSizes.includes(rs));
       });
       filteredBySizes = beforeCount - filteredProducts.length;
@@ -2523,6 +2599,9 @@ async function handleSearch(req: Request, isPost: boolean) {
       shortfallReason: quantityFulfilled ? undefined : shortfallReason,
       duration,
       quotaExhausted: hitRateLimit,
+      excludedByQueue: queueExcludedPids.size,
+      excludedByStore: storeExcludedPids.size,
+      excludedTotal: excludedPids.size,
       // Batch mode pagination info
       batch: isBatchMode ? {
         hasMore: hasMoreToProcess && !hitRateLimit,
@@ -2545,6 +2624,13 @@ async function handleSearch(req: Request, isPost: boolean) {
         hitTimeLimit,
         hitRateLimit,
         exhaustedCandidates,
+        exclusion: {
+          excludedByQueue: queueExcludedPids.size,
+          excludedByStore: storeExcludedPids.size,
+          excludedTotal: excludedPids.size,
+          skippedByQueue: skippedByQueueExclusion,
+          skippedByStore: skippedByStoreExclusion,
+        },
         mediaFilter: mediaFilterStats,
       }
     }, { headers: { 'Cache-Control': 'no-store' } });

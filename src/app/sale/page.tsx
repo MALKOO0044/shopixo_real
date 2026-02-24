@@ -39,6 +39,11 @@ export default async function SalePage({ searchParams }: { searchParams?: { sort
   const nonce = headers().get('x-csp-nonce') || undefined;
   const supabase = getSupabaseAdmin();
 
+  const isMissingIsActiveError = (err: any): boolean => {
+    const message = String(err?.message || "").toLowerCase();
+    return !!err && message.includes("is_active");
+  };
+
   const page = Math.max(1, parseInt(searchParams?.page || "1") || 1);
   const perPage = 24;
   const offset = (page - 1) * perPage;
@@ -56,28 +61,46 @@ export default async function SalePage({ searchParams }: { searchParams?: { sort
     );
   }
 
-  let query = supabase
-    .from("products")
-    .select("*", { count: "exact" });
+  const runSaleQuery = async (includeActiveFilter: boolean) => {
+    let query = supabase
+      .from("products")
+      .select("*", { count: "exact" }) as any;
 
-  if (!isNaN(min) && min > 0) {
-    query = query.gte("price", min);
+    if (includeActiveFilter) {
+      query = query.or("is_active.is.null,is_active.eq.true");
+    }
+
+    if (!isNaN(min) && min > 0) {
+      query = query.gte("price", min);
+    }
+    if (!isNaN(max) && max > 0) {
+      query = query.lte("price", max);
+    }
+
+    if (sort === "price_asc") {
+      query = query.order("price", { ascending: true });
+    } else if (sort === "price_desc") {
+      query = query.order("price", { ascending: false });
+    } else {
+      query = query.order("created_at", { ascending: false });
+    }
+
+    query = query.range(offset, offset + perPage - 1);
+    return await query;
+  };
+
+  let { data: products, count, error } = await runSaleQuery(true);
+  if (isMissingIsActiveError(error)) {
+    const fallback = await runSaleQuery(false);
+    products = fallback.data;
+    count = fallback.count;
+    error = fallback.error;
   }
-  if (!isNaN(max) && max > 0) {
-    query = query.lte("price", max);
+
+  if (error) {
+    console.error("[Sale] Failed to fetch products:", error.message || error);
   }
 
-  if (sort === "price_asc") {
-    query = query.order("price", { ascending: true });
-  } else if (sort === "price_desc") {
-    query = query.order("price", { ascending: false });
-  } else {
-    query = query.order("created_at", { ascending: false });
-  }
-
-  query = query.range(offset, offset + perPage - 1);
-
-  const { data: products, count } = await query;
   const total = count || 0;
 
   const allProducts = (products || []) as Product[];

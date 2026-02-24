@@ -8,6 +8,7 @@ import { hasTable } from '@/lib/db-features';
 import { computeRetailFromLanded, sarToUsd, usdToSar } from '@/lib/pricing';
 import { extractCjProductGalleryImages, normalizeCjImageKey, prioritizeCjHeroImage } from '@/lib/cj/image-gallery';
 import { extractCjProductVideoUrl } from '@/lib/cj/video';
+import { normalizeSingleSize, normalizeSizeList } from '@/lib/cj/size-normalization';
 import { build4kVideoDelivery } from '@/lib/video/delivery';
 
 function getSupabaseAdmin() {
@@ -51,6 +52,9 @@ function extractVariantColorSize(variant: any, fallbackName?: string): { color?:
   let size = variant?.size || variant?.sizeNameEn || variant?.sizeName || undefined;
   let color = variant?.color || variant?.colour || variant?.colorNameEn || variant?.colorName || undefined;
 
+  const normalizedExplicitSize = normalizeSingleSize(size, { allowNumeric: false });
+  if (normalizedExplicitSize) size = normalizedExplicitSize;
+
   const variantKeyRaw = String(
     variant?.variantKey || variant?.variantNameEn || variant?.variantName || fallbackName || ''
   ).replace(/[\u4e00-\u9fff]/g, '').trim();
@@ -60,9 +64,9 @@ function extractVariantColorSize(variant: any, fallbackName?: string): { color?:
     if (parts.length >= 2) {
       const lastPart = parts[parts.length - 1];
       const firstPart = parts.slice(0, -1).join('-').trim();
-      const sizePattern = /^(XS|S|M|L|XL|XXL|XXXL|2XL|3XL|4XL|5XL|6XL|One Size|Free Size|\d{2,3})$/i;
-      if (sizePattern.test(lastPart)) {
-        if (!size) size = lastPart;
+      const normalizedFromKey = normalizeSingleSize(lastPart, { allowNumeric: false });
+      if (normalizedFromKey) {
+        if (!size) size = normalizedFromKey;
         if (!color) color = firstPart;
       } else if (!color) {
         color = variantKeyRaw;
@@ -74,9 +78,11 @@ function extractVariantColorSize(variant: any, fallbackName?: string): { color?:
     color = variantKeyRaw;
   }
 
+  const normalizedFinalSize = normalizeSingleSize(size, { allowNumeric: false });
+
   return {
     color: typeof color === 'string' && color.trim() ? color.trim() : undefined,
-    size: typeof size === 'string' && size.trim() ? size.trim() : undefined,
+    size: normalizedFinalSize || undefined,
   };
 }
 
@@ -533,7 +539,6 @@ export async function GET(
     const colorList = ['Black', 'White', 'Red', 'Blue', 'Green', 'Yellow', 'Pink', 'Purple', 'Orange', 'Brown', 'Grey', 'Gray', 'Beige', 'Navy', 'Khaki', 'Apricot', 'Wine', 'Coffee', 'Camel', 'Cream', 'Rose', 'Gold', 'Silver', 'Ivory', 'Mint', 'Coral', 'Burgundy', 'Maroon', 'Olive', 'Teal', 'Turquoise', 'Lavender', 'Lilac', 'Peach', 'Tan', 'Charcoal', 'Violet', 'Nude'];
     const colorSet = new Set(colorList.map(c => c.toLowerCase()));
     const colorTestPattern = /\b(Black|White|Red|Blue|Green|Yellow|Pink|Purple|Orange|Brown|Grey|Gray|Beige|Navy|Khaki|Apricot|Wine|Coffee|Camel|Cream|Rose|Gold|Silver|Ivory|Mint|Coral|Burgundy|Maroon|Olive|Teal|Turquoise|Lavender|Lilac|Peach|Tan|Charcoal|Violet|Nude)\b/i;
-    const clothingSizePattern = /^(XS|S|M|L|XL|XXL|XXXL|2XL|3XL|4XL|5XL|6XL|One Size|Free Size)$/i;
     const devicePattern = /\b(iPhone|Samsung|Xiaomi|Huawei|Redmi|OPPO|Vivo|OnePlus|Pixel|iPad|Galaxy)/i;
 
     const isColor = (s: string): boolean => {
@@ -542,8 +547,15 @@ export async function GET(
       return colorTestPattern.test(s);
     };
 
-    const isClothingSize = (s: string): boolean => clothingSizePattern.test(s.trim());
+    const isClothingSize = (s: string): boolean => !!normalizeSingleSize(s, { allowNumeric: false });
     const isDeviceModel = (s: string): boolean => devicePattern.test(s);
+
+    const addNormalizedSize = (rawValue: unknown) => {
+      const normalized = normalizeSingleSize(rawValue, { allowNumeric: false });
+      if (normalized) {
+        sizes.add(normalized);
+      }
+    };
 
     for (const v of variants) {
       const explicitColor = v.color || v.colour || v.colorNameEn || v.colorName;
@@ -562,7 +574,7 @@ export async function GET(
           if (isDeviceModel(cleanSize)) {
             models.add(cleanSize);
           } else {
-            sizes.add(cleanSize);
+            addNormalizedSize(cleanSize);
           }
         }
       }
@@ -578,16 +590,16 @@ export async function GET(
           } else if (isDeviceModel(part)) {
             models.add(part);
           } else if (isClothingSize(part)) {
-            sizes.add(part.toUpperCase());
+            addNormalizedSize(part);
           } else if (part.length < 20) {
-            sizes.add(part);
+            addNormalizedSize(part);
           }
         }
       }
     }
 
     const extractedColors = [...colors].slice(0, 20);
-    const extractedSizes = [...sizes].slice(0, 20);
+    const extractedSizes = normalizeSizeList([...sizes], { allowNumeric: false }).slice(0, 20);
     const extractedModels = [...models].slice(0, 25);
 
     // Build product info with variant colors/sizes

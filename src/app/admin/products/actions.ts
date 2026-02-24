@@ -258,7 +258,36 @@ export async function deleteProduct(prevState: { error: string | null; success: 
     console.error("Delete product failed:", error);
     // 23503 is foreign_key_violation in Postgres
     if ((error as any).code === "23503") {
-      return { error: "Cannot delete: product is referenced by existing orders. Consider setting stock to 0 instead.", success: false };
+      let archiveError: any = null;
+      const archiveAttempt = await supabaseAdmin
+        .from("products")
+        .update({ is_active: false, stock: 0 })
+        .eq("id", id);
+      archiveError = archiveAttempt.error;
+
+      if (archiveError && ((archiveError as any).code === "42703" || String(archiveError.message || "").includes("is_active"))) {
+        const stockOnlyAttempt = await supabaseAdmin
+          .from("products")
+          .update({ stock: 0 })
+          .eq("id", id);
+        archiveError = stockOnlyAttempt.error;
+      }
+
+      if (archiveError) {
+        console.error("Soft remove fallback failed:", archiveError);
+        return { error: "Database error: Could not archive product after delete restriction.", success: false };
+      }
+
+      revalidatePath("/admin");
+      revalidatePath("/admin/products");
+      revalidatePath("/");
+      revalidatePath("/shop");
+      revalidatePath("/search");
+      revalidatePath("/sale");
+      revalidatePath("/new-arrivals");
+      revalidatePath("/bestsellers");
+      redirect("/admin/products");
+      return { error: null, success: true };
     }
     return { error: "Database error: Could not delete product.", success: false };
   }
@@ -266,4 +295,5 @@ export async function deleteProduct(prevState: { error: string | null; success: 
   revalidatePath("/admin");
   revalidatePath("/admin/products");
   redirect("/admin/products");
+  return { error: null, success: true };
 }

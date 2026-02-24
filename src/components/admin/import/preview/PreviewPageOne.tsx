@@ -3,6 +3,7 @@
 import { Star, TrendingUp, Image as ImageIcon, Tag, Ruler, FolderOpen, DollarSign, Info, Palette, Smartphone } from "lucide-react";
 import { normalizeDisplayedRating } from "@/lib/rating/engine";
 import { sarToUsd } from "@/lib/pricing";
+import { normalizeSizeList } from "@/lib/cj/size-normalization";
 import type { PricedProduct } from "./types";
 
 type PreviewPageOneProps = {
@@ -57,9 +58,7 @@ function PopularityDisplay({ listedNum }: { listedNum: number }) {
 }
 
 export default function PreviewPageOne({ product }: PreviewPageOneProps) {
-  const uniqueSizes = product.availableSizes && product.availableSizes.length > 0
-    ? product.availableSizes
-    : [];
+  const uniqueSizes = normalizeSizeList(product.availableSizes || [], { allowNumeric: false });
   const uniqueColors = product.availableColors && product.availableColors.length > 0
     ? product.availableColors
     : [];

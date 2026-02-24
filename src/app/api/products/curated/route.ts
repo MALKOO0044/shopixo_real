@@ -29,6 +29,11 @@ function extractFirstImage(images: any): string {
   return "";
 }
 
+function isMissingIsActiveError(err: any): boolean {
+  const message = String(err?.message || "").toLowerCase();
+  return !!err && message.includes("is_active");
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -39,13 +44,28 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Database not configured" }, { status: 500 });
     }
 
-    let { data: products, error } = await supabase
-      .from("products")
-      .select("id, title, price, images, slug, rating, stock")
-      .gt("stock", 0)
-      .order("rating", { ascending: false, nullsFirst: false })
-      .order("stock", { ascending: false })
-      .limit(limit * 2);
+    const runPrimaryQuery = async (includeActiveFilter: boolean) => {
+      let query = supabase
+        .from("products")
+        .select("id, title, price, images, slug, rating, stock")
+        .gt("stock", 0) as any;
+
+      if (includeActiveFilter) {
+        query = query.or("is_active.is.null,is_active.eq.true");
+      }
+
+      return await query
+        .order("rating", { ascending: false, nullsFirst: false })
+        .order("stock", { ascending: false })
+        .limit(limit * 2);
+    };
+
+    let { data: products, error } = await runPrimaryQuery(true);
+    if (isMissingIsActiveError(error)) {
+      const fallback = await runPrimaryQuery(false);
+      products = fallback.data;
+      error = fallback.error;
+    }
 
     if (error) {
       console.error("Error fetching curated products:", error);
@@ -53,11 +73,24 @@ export async function GET(req: NextRequest) {
     }
     
     if (!products || products.length === 0) {
-      const fallbackResult = await supabase
-        .from("products")
-        .select("id, title, price, images, slug, rating, stock")
-        .order("rating", { ascending: false, nullsFirst: false })
-        .limit(limit * 2);
+      const runFallbackQuery = async (includeActiveFilter: boolean) => {
+        let query = supabase
+          .from("products")
+          .select("id, title, price, images, slug, rating, stock") as any;
+
+        if (includeActiveFilter) {
+          query = query.or("is_active.is.null,is_active.eq.true");
+        }
+
+        return await query
+          .order("rating", { ascending: false, nullsFirst: false })
+          .limit(limit * 2);
+      };
+
+      let fallbackResult = await runFallbackQuery(true);
+      if (isMissingIsActiveError(fallbackResult.error)) {
+        fallbackResult = await runFallbackQuery(false);
+      }
       
       if (!fallbackResult.error) {
         products = fallbackResult.data;

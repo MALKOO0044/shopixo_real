@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { queryProductByPidOrKeyword } from "@/lib/cj/v2";
 import { ensureAdmin } from "@/lib/auth/admin-guard";
 import { isAdminUser } from "@/lib/auth/admin-check";
+import { normalizeSingleSize, normalizeSizeList } from "@/lib/cj/size-normalization";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -81,12 +82,6 @@ function deduplicateByNormalizedKey(items: string[]): string[] {
   return Array.from(seen.values());
 }
 
-const SIZE_TOKENS = new Set([
-  'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', '2XL', '3XL', '4XL', '5XL', '6XL',
-  'xs', 's', 'm', 'l', 'xl', 'xxl', 'xxxl', '2xl', '3xl', '4xl', '5xl', '6xl',
-  'ONE SIZE', 'One Size', 'one size', 'OS', 'Free Size', 'FREE SIZE',
-]);
-
 function isSkuCode(str: string): boolean {
   if (!str) return false;
   const upper = str.toUpperCase().trim();
@@ -111,22 +106,24 @@ function extractColorAndSize(variantKey: string): { color: string | null; size: 
       const parts = variantKey.split(sep).map(p => p.trim()).filter(Boolean);
       if (parts.length >= 2) {
         const lastPart = parts[parts.length - 1];
-        if (SIZE_TOKENS.has(lastPart) || SIZE_TOKENS.has(lastPart.toUpperCase())) {
+        const normalizedLastSize = normalizeSingleSize(lastPart, { allowNumeric: false });
+        if (normalizedLastSize) {
           const colorParts = parts.slice(0, -1);
           const potentialColor = colorParts.join(' ');
           if (isSkuCode(potentialColor)) {
-            return { color: null, size: lastPart.toUpperCase() };
+            return { color: null, size: normalizedLastSize };
           }
-          return { color: potentialColor, size: lastPart.toUpperCase() };
+          return { color: potentialColor, size: normalizedLastSize };
         }
         const firstPart = parts[0];
-        if (SIZE_TOKENS.has(firstPart) || SIZE_TOKENS.has(firstPart.toUpperCase())) {
+        const normalizedFirstSize = normalizeSingleSize(firstPart, { allowNumeric: false });
+        if (normalizedFirstSize) {
           const colorParts = parts.slice(1);
           const potentialColor = colorParts.join(' ');
           if (isSkuCode(potentialColor)) {
-            return { color: null, size: firstPart.toUpperCase() };
+            return { color: null, size: normalizedFirstSize };
           }
-          return { color: potentialColor, size: firstPart.toUpperCase() };
+          return { color: potentialColor, size: normalizedFirstSize };
         }
       }
     }
@@ -194,7 +191,7 @@ export async function POST(req: NextRequest) {
       const parsed = extractColorAndSize(variantKey);
       
       const vColor = v.color ? String(v.color).trim() : null;
-      const vSize = v.size ? String(v.size).trim() : null;
+      const vSize = normalizeSingleSize(v.size ? String(v.size).trim() : null, { allowNumeric: false });
       
       const finalColor = (vColor && !isSkuCode(vColor)) ? vColor : parsed.color;
       const finalSize = (vSize && !isSkuCode(vSize)) ? vSize : parsed.size;
@@ -204,7 +201,7 @@ export async function POST(req: NextRequest) {
     }
 
     const deduplicatedColors = deduplicateByNormalizedKey(allColors);
-    const deduplicatedSizes = deduplicateByNormalizedKey(allSizes);
+    const deduplicatedSizes = normalizeSizeList(allSizes, { allowNumeric: false });
 
     const { error: updateError } = await supabase
       .from("products")
@@ -226,7 +223,7 @@ export async function POST(req: NextRequest) {
       const parsed = extractColorAndSize(variantKey);
       
       const vColor = v.color ? String(v.color).trim() : null;
-      const vSize = v.size ? String(v.size).trim() : null;
+      const vSize = normalizeSingleSize(v.size ? String(v.size).trim() : null, { allowNumeric: false });
       
       const finalColor = (vColor && !isSkuCode(vColor)) ? vColor : parsed.color;
       const finalSize = (vSize && !isSkuCode(vSize)) ? vSize : parsed.size;

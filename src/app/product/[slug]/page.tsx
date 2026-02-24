@@ -9,6 +9,10 @@ function normalizeSlugCandidate(s: string) {
   return (s || "").trim().toLowerCase().replace(/\s+/g, "-");
 }
 
+function isInactiveProduct(product: { is_active?: boolean | null } | null | undefined): boolean {
+  return !!product && product.is_active === false;
+}
+
 function pickPrimaryImage(images: any): string | null {
   try {
     if (!images) return null;
@@ -59,43 +63,43 @@ export async function generateMetadata({ params }: { params: { slug: string } })
     return { title: `${params.slug} | ${storeName}`, description: 'Product details' };
   }
   const isNumeric = /^\d+$/.test(params.slug);
-  let product: { title: string; description: string; images: string[]; slug?: string } | null = null;
+  let product: { title: string; description: string; images: string[]; slug?: string; is_active?: boolean | null } | null = null;
   // Try slug first (even if numeric), without is_active filter
   {
     const { data } = await supabase
       .from("products")
-      .select("title, description, images, slug")
+      .select("*")
       .eq("slug", params.slug)
       .single();
-    product = data as any;
+    product = isInactiveProduct(data as any) ? null : (data as any);
   }
   // Fallbacks: case-insensitive and normalized
   if (!product) {
     const norm = normalizeSlugCandidate(params.slug);
     const { data } = await supabase
       .from("products")
-      .select("title, description, images, slug")
+      .select("*")
       .ilike("slug", norm)
       .maybeSingle();
-    product = (data as any) || null;
+    product = isInactiveProduct(data as any) ? null : ((data as any) || null);
   }
   if (!product) {
     const norm = normalizeSlugCandidate(params.slug);
     const { data } = await supabase
       .from("products")
-      .select("title, description, images, slug")
+      .select("*")
       .ilike("slug", `%${norm}%`)
       .limit(1)
       .single();
-    product = (data as any) || null;
+    product = isInactiveProduct(data as any) ? null : ((data as any) || null);
   }
   if (!product && isNumeric) {
     const { data } = await supabase
       .from("products")
-      .select("title, description, images, slug")
+      .select("*")
       .eq("id", Number(params.slug))
       .single();
-    product = data as any;
+    product = isInactiveProduct(data as any) ? null : (data as any);
   }
  
   if (!product) {
@@ -171,10 +175,18 @@ export default async function ProductPage({ params, searchParams }: { params: { 
       .eq("id", Number(params.slug))
       .single();
     product = data as any;
+    if (isInactiveProduct(product as any)) {
+      notFound();
+    }
     if (product && product.slug && product.slug !== params.slug) {
       redirect(`/product/${product.slug}`);
     }
   }
+
+  if (isInactiveProduct(product as any)) {
+    notFound();
+  }
+
   // If found but slug differs only by case/format, redirect to canonical
   if (product && product.slug && product.slug !== params.slug) {
     redirect(`/product/${product.slug}`);

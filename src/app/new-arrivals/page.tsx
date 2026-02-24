@@ -14,7 +14,18 @@ export default async function NewArrivalsPage() {
     products = []
   } else {
     try {
-      let { data, error } = await supabase.from("products").select("*").order("created_at", { ascending: false })
+      let { data, error } = await supabase
+        .from("products")
+        .select("*")
+        .or("is_active.is.null,is_active.eq.true")
+        .order("created_at", { ascending: false })
+
+      if (error && String(error.message || "").toLowerCase().includes("is_active")) {
+        const activeFallback = await supabase.from("products").select("*").order("created_at", { ascending: false })
+        data = activeFallback.data as any
+        error = activeFallback.error as any
+      }
+
       if (error && (error as any).code === "42703") {
         const fb = await supabase.from("products").select("*").order("id", { ascending: false })
         data = fb.data as any

@@ -67,18 +67,31 @@ export default async function BestsellersPage({ searchParams }: { searchParams?:
         return q
       }
 
-      const buildQuery = (select: string) => applyPriceFilters(supabase.from("products").select(select))
+      const isMissingIsActiveError = (err: any): boolean => {
+        const message = String(err?.message || "").toLowerCase()
+        return !!err && message.includes("is_active")
+      }
 
-      if (sort === "price-asc" || sort === "price-desc") {
-        const ascending = sort === "price-asc"
-        let { data, error } = await buildQuery(productSelect).order("price", { ascending })
-        if (error && (error as any).code === "42703") {
-          const fallback = await buildQuery(productSelectFallback).order("price", { ascending })
-          data = fallback.data as any
-          error = fallback.error as any
+      const fetchProducts = async (includeActiveFilter: boolean) => {
+        const buildQuery = (select: string) => {
+          let query = supabase.from("products").select(select) as any
+          if (includeActiveFilter) {
+            query = query.or("is_active.is.null,is_active.eq.true")
+          }
+          return applyPriceFilters(query)
         }
-        products = (data as any[] | null) ?? []
-      } else {
+
+        if (sort === "price-asc" || sort === "price-desc") {
+          const ascending = sort === "price-asc"
+          let { data, error } = await buildQuery(productSelect).order("price", { ascending })
+          if (error && (error as any).code === "42703") {
+            const fallback = await buildQuery(productSelectFallback).order("price", { ascending })
+            data = fallback.data as any
+            error = fallback.error as any
+          }
+          return { data, error }
+        }
+
         let { data, error } = await buildQuery(productSelect).order("sales_count", { ascending: false })
         if (error && (error as any).code === "42703") {
           const byRating = await buildQuery(productSelect).order("displayed_rating", { ascending: false })
@@ -96,8 +109,20 @@ export default async function BestsellersPage({ searchParams }: { searchParams?:
             error = byRating.error as any
           }
         }
-        products = (data as any[] | null) ?? []
+        return { data, error }
       }
+
+      let { data, error } = await fetchProducts(true)
+      if (isMissingIsActiveError(error)) {
+        const retry = await fetchProducts(false)
+        data = retry.data
+        error = retry.error
+      }
+
+      if (error) {
+        console.error("[BestSellers] Product query error:", error.message || error)
+      }
+      products = (data as any[] | null) ?? []
     } catch {
       products = []
     }
