@@ -36,6 +36,8 @@ type SupabaseCategory = {
   children?: SupabaseCategory[];
 };
 
+const FIXED_PROFIT_MARGIN_PERCENT = 42;
+
 type SelectedFeature = {
   cjCategoryId: string;
   cjCategoryName: string;
@@ -107,7 +109,7 @@ export default function ProductDiscoveryPage() {
   const [minStock, setMinStock] = useState(0);
   const [maxPrice, setMaxPrice] = useState(100);
   const [minPrice, setMinPrice] = useState(0);
-  const [profitMargin, setProfitMargin] = useState(8);
+  const profitMargin = FIXED_PROFIT_MARGIN_PERCENT;
   const [popularity, setPopularity] = useState("any");
   const [minRating, setMinRating] = useState("any");
   // Always use CJPacket Ordinary - no filter option (100% accuracy requirement)
@@ -139,7 +141,6 @@ export default function ProductDiscoveryPage() {
   const TOTAL_PREVIEW_PAGES = 7;
 
   const quantityPresets = [2000, 1500, 1000, 500, 250, 100, 50, 25, 10];
-  const profitPresets = [100, 50, 25, 15, 8];
   
 
   const testConnection = async () => {
@@ -582,13 +583,14 @@ export default function ProductDiscoveryPage() {
               plainSpecifications['Product Type'] = htmlToPlain(p.productType);
             }
 
-            const sourceSellingPoints = Array.isArray((p as any).sellingPoints)
-              ? (p as any).sellingPoints.map((s: unknown) => htmlToPlain(s)).filter(Boolean)
+            const rawSellingPoints = (p as any).sellingPoints;
+            const sourceSellingPoints = Array.isArray(rawSellingPoints)
+              ? rawSellingPoints.filter((point: any) => typeof point === 'string' && point.trim().length > 0)
               : [];
             const normalizedSellingPoints = sourceSellingPoints.length > 0
               ? sourceSellingPoints
               : htmlToLines(p.overview).slice(0, 8);
-            const appliedMargin = Number((p as any).profitMarginApplied ?? profitMargin);
+            const appliedMargin = FIXED_PROFIT_MARGIN_PERCENT;
             
             return {
               cjProductId: p.pid,
@@ -1064,29 +1066,9 @@ export default function ProductDiscoveryPage() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <span className="text-sm text-amber-700 font-medium">*Profit Margin % ({profitMargin}%)</span>
-              <div className="flex gap-1">
-                {profitPresets.map(preset => (
-                  <button
-                    key={preset}
-                    onClick={() => setProfitMargin(preset)}
-                    className={`px-3 py-1.5 text-sm rounded ${
-                      profitMargin === preset
-                        ? "bg-amber-500 text-white font-medium"
-                        : "bg-white border border-gray-300 text-gray-700 hover:bg-gray-50"
-                    }`}
-                  >
-                    {preset}%
-                  </button>
-                ))}
-              </div>
-              <span className="text-gray-400">%</span>
-              <input
-                type="number"
-                value={profitMargin}
-                onChange={(e) => setProfitMargin(Number(e.target.value))}
-                className="w-16 px-2 py-1.5 border border-gray-300 rounded text-center"
-                dir="ltr"
-              />
+              <span className="px-3 py-1.5 text-sm rounded bg-amber-500 text-white font-medium">
+                Fixed at {FIXED_PROFIT_MARGIN_PERCENT}%
+              </span>
             </div>
             
             <div className="flex items-center gap-4">
@@ -1100,7 +1082,7 @@ export default function ProductDiscoveryPage() {
             </div>
           </div>
           <p className="text-xs text-amber-600 mt-2 text-right">
-            Set your desired profit margin. Products display final USD sell prices from priced variants using this applied margin.
+            Profit margin is fixed at 42% for all products added to the checklist/review/import flow.
           </p>
         </div>
 
@@ -1269,7 +1251,7 @@ export default function ProductDiscoveryPage() {
                         </span>
                       </div>
                       {(() => {
-                        const appliedMargin = Number((product as any).profitMarginApplied ?? profitMargin);
+                        const appliedMargin = FIXED_PROFIT_MARGIN_PERCENT;
                         if (!Number.isFinite(appliedMargin) || appliedMargin <= 0) return null;
                         return (
                           <p className="text-[11px] text-emerald-700 mt-1">

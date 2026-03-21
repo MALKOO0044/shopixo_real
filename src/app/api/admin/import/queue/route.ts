@@ -5,6 +5,8 @@ import { calculateRetailSar, usdToSar } from "@/lib/pricing";
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+const FIXED_PROFIT_MARGIN_PERCENT = 42;
+
 function getSupabaseAdmin() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -136,7 +138,7 @@ export async function PATCH(req: NextRequest) {
           if (data.category) updateData.category = data.category;
           if (data.admin_notes !== undefined) updateData.admin_notes = data.admin_notes;
           if (data.calculated_retail_sar) updateData.calculated_retail_sar = data.calculated_retail_sar;
-          if (data.margin_applied) updateData.margin_applied = data.margin_applied;
+          updateData.margin_applied = FIXED_PROFIT_MARGIN_PERCENT;
         }
         break;
       default:

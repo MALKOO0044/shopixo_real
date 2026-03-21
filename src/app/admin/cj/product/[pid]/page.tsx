@@ -260,6 +260,12 @@ export default function CjProductAdminPage({ params }: { params: { pid: string }
 
   const images = product.images || []
   const totalStock = product.stock || 0
+  const maxShippingEstUsd = Array.isArray(product.variants)
+    ? product.variants.reduce((highest: number, variant: any) => {
+      const shippingUsd = Number((variant as any)?.shippingPriceUSD || 0)
+      return shippingUsd > highest ? shippingUsd : highest
+    }, 0)
+    : 0
   const displayedRating = typeof product.displayedRating === 'number'
     ? normalizeDisplayedRating(product.displayedRating)
     : null
@@ -523,8 +529,8 @@ export default function CjProductAdminPage({ params }: { params: { pid: string }
                     <span className="font-semibold">${(product.variants[0]?.variantPriceUSD || 0).toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between items-center py-2 border-b">
-                    <span className="text-gray-600">Shipping (Est.)</span>
-                    <span className="font-semibold">${(product.variants[0]?.shippingPriceUSD || 0).toFixed(2)}</span>
+                    <span className="text-gray-600">Shipping (Applied Highest)</span>
+                    <span className="font-semibold">${maxShippingEstUsd.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between items-center py-2 border-b">
                     <span className="text-gray-600">Suggested Retail</span>

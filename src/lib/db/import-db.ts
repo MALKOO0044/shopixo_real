@@ -5,6 +5,7 @@ import { sarToUsd } from '@/lib/pricing';
 import { normalizeCjVideoUrl } from '@/lib/cj/video';
 
 let supabaseAdmin: SupabaseClient | null = null;
+const FIXED_PROFIT_MARGIN_PERCENT = 42;
 
 function getSupabaseAdmin(): SupabaseClient | null {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -263,11 +264,23 @@ export async function addProductToQueue(batchId: number, product: {
 
   const imagesCount = Array.isArray(product.images) ? product.images.length : 0;
   const vpArray: any[] = Array.isArray(product.variantPricing) ? product.variantPricing : [];
+  const fixedVariantPricing = vpArray.map((variantPricing: any) => ({
+    ...variantPricing,
+    marginPercent: FIXED_PROFIT_MARGIN_PERCENT,
+    profitMargin: FIXED_PROFIT_MARGIN_PERCENT,
+    margin: FIXED_PROFIT_MARGIN_PERCENT,
+  }));
   const usdCandidates: number[] = [];
-  for (const vp of vpArray) {
+  for (const vp of fixedVariantPricing) {
     const c = Number(vp?.costPrice);
     if (Number.isFinite(c) && c > 0) usdCandidates.push(c);
   }
+  const shippingCandidates: number[] = [];
+  for (const vp of fixedVariantPricing) {
+    const shippingUsd = Number(vp?.shippingCost ?? vp?.shippingPriceUSD ?? vp?.shipping_price_usd);
+    if (Number.isFinite(shippingUsd) && shippingUsd > 0) shippingCandidates.push(shippingUsd);
+  }
+  const resolvedMaxShippingUsd = shippingCandidates.length > 0 ? Math.max(...shippingCandidates) : null;
   if (Array.isArray(product.variants)) {
     for (const v of product.variants) {
       const c = Number(v?.variantPriceUSD ?? v?.variantPrice);
@@ -317,9 +330,9 @@ export async function addProductToQueue(batchId: number, product: {
     images: product.images,
     variants: product.variants,
     cj_price_usd: minVariantUsd,
-    shipping_cost_usd: null,
+    shipping_cost_usd: resolvedMaxShippingUsd,
     calculated_retail_sar: null,
-    margin_applied: null,
+    margin_applied: FIXED_PROFIT_MARGIN_PERCENT,
     supplier_rating: product.supplierRating ?? null,
     total_sales: product.totalSales ?? null,
     stock_total: product.totalStock,
@@ -358,16 +371,16 @@ export async function addProductToQueue(batchId: number, product: {
   
   // New columns that require migration - check if they exist first
   const newColumns: Record<string, any> = {
-    variant_pricing: product.variantPricing || [],
+    variant_pricing: fixedVariantPricing,
     size_chart_data: product.sizeChartData || null,
     specifications: product.specifications || {},
     selling_points: product.sellingPoints || [],
     inventory_by_warehouse: product.inventoryByWarehouse || null,
     price_breakdown: product.priceBreakdown || null,
     cj_total_cost: product.cjTotalCost || null,
-    cj_shipping_cost: product.cjShippingCost || null,
+    cj_shipping_cost: product.cjShippingCost || resolvedMaxShippingUsd || null,
     cj_product_cost: product.cjProductCost || null,
-    profit_margin: product.profitMargin || null,
+    profit_margin: FIXED_PROFIT_MARGIN_PERCENT,
     color_image_map: product.colorImageMap || null,
     product_code: productCode,
     video_url: canonicalVideoUrl || null,

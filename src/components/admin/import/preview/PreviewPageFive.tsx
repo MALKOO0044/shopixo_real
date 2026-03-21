@@ -19,6 +19,12 @@ export default function PreviewPageFive({ product }: PreviewPageFiveProps) {
     ? Math.max(...availableVariants.map((v) => v.shippingPriceUSD))
     : 0;
 
+  const highestShippingVariant = availableVariants.length > 0
+    ? availableVariants.reduce((highest, current) =>
+      current.shippingPriceUSD > highest.shippingPriceUSD ? current : highest
+    )
+    : undefined;
+
   const deliveryTimes = availableVariants
     .map((v) => v.deliveryDays)
     .filter((d) => d && d.trim() !== "" && d !== "Unknown");
@@ -33,23 +39,24 @@ export default function PreviewPageFive({ product }: PreviewPageFiveProps) {
     ? Math.round((availableVariants.length / product.totalVariants) * 100)
     : 0;
 
-  const firstVariant = availableVariants[0];
-  const productCostUSD = Number(firstVariant?.variantPriceUSD || 0);
-  const shippingCostUSD = Number(firstVariant?.shippingPriceUSD || 0);
+  const selectedVariant = highestShippingVariant;
+  const productCostUSD = Number(selectedVariant?.variantPriceUSD || 0);
+  const shippingCostUSD = Number(selectedVariant?.shippingPriceUSD || 0);
   const totalCostUSD = Number(
-    (firstVariant as any)?.totalCostUSD
-      ?? (Number(firstVariant?.totalCostSAR || 0) > 0 ? sarToUsd(Number(firstVariant?.totalCostSAR || 0)) : 0)
+    (selectedVariant as any)?.totalCostUSD
+      ?? (Number(selectedVariant?.totalCostSAR || 0) > 0 ? sarToUsd(Number(selectedVariant?.totalCostSAR || 0)) : 0)
   );
   const sellPriceUSD = Number(
-    (firstVariant as any)?.sellPriceUSD
-      ?? (Number(firstVariant?.sellPriceSAR || 0) > 0 ? sarToUsd(Number(firstVariant?.sellPriceSAR || 0)) : 0)
+    (selectedVariant as any)?.sellPriceUSD
+      ?? (Number(selectedVariant?.sellPriceSAR || 0) > 0 ? sarToUsd(Number(selectedVariant?.sellPriceSAR || 0)) : 0)
   );
   const profitUSD = Number(
-    (firstVariant as any)?.profitUSD
-      ?? (Number(firstVariant?.profitSAR || 0) > 0 ? sarToUsd(Number(firstVariant?.profitSAR || 0)) : 0)
+    (selectedVariant as any)?.profitUSD
+      ?? (Number(selectedVariant?.profitSAR || 0) > 0 ? sarToUsd(Number(selectedVariant?.profitSAR || 0)) : 0)
   );
   const marginPercent = Number(
-    (firstVariant as any)?.marginPercent
+    (product as any)?.profitMarginApplied
+      ?? (selectedVariant as any)?.marginPercent
       ?? (sellPriceUSD > 0 ? (profitUSD / sellPriceUSD) * 100 : 0)
   );
 
@@ -71,7 +78,7 @@ export default function PreviewPageFive({ product }: PreviewPageFiveProps) {
           <h3 className="text-lg font-bold text-indigo-900">Price Breakdown (CJPacket Ordinary)</h3>
         </div>
         
-        {firstVariant ? (
+        {selectedVariant ? (
           <div className="space-y-4">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="bg-white/70 rounded-lg p-4 text-center">
@@ -114,10 +121,10 @@ export default function PreviewPageFive({ product }: PreviewPageFiveProps) {
               <div className="text-sm text-emerald-700 text-right">Applied margin: {marginPercent.toFixed(1)}%</div>
             )}
             
-            {firstVariant.logisticName && (
+            {selectedVariant.logisticName && (
               <div className="text-sm text-indigo-600 flex items-center gap-2">
                 <Truck className="h-4 w-4" />
-                <span>Selected: {firstVariant.logisticName} ({firstVariant.deliveryDays})</span>
+                <span>Selected (highest-size rule): {selectedVariant.logisticName} ({selectedVariant.deliveryDays})</span>
               </div>
             )}
             <div className="text-xs text-gray-500 mt-2 italic">
@@ -194,16 +201,14 @@ export default function PreviewPageFive({ product }: PreviewPageFiveProps) {
           {availableVariants.length > 0 ? (
             <div className="space-y-3">
               <div className="flex justify-between items-center">
-                <span className="text-green-700">Minimum:</span>
-                <span className="text-xl font-bold text-green-800">
-                  ${minShipping.toFixed(2)}
-                </span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-green-700">Maximum:</span>
+                <span className="text-green-700">Applied (Highest):</span>
                 <span className="text-xl font-bold text-green-800">
                   ${maxShipping.toFixed(2)}
                 </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-green-700">Observed range:</span>
+                <span className="text-sm font-semibold text-green-800">${minShipping.toFixed(2)} - ${maxShipping.toFixed(2)}</span>
               </div>
             </div>
           ) : (

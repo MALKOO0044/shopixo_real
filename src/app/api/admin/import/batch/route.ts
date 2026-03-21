@@ -15,6 +15,8 @@ import { build4kVideoDelivery, requiresVideoForMediaMode } from "@/lib/video/del
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+const FIXED_PROFIT_MARGIN_PERCENT = 42;
+
 export async function POST(req: NextRequest) {
   console.log('[Import Batch] POST request received');
   try {
@@ -111,6 +113,15 @@ export async function POST(req: NextRequest) {
         avgPrice = p.variants.reduce((sum: number, v: any) => sum + (v.price || v.variantSellPrice || 0), 0) / p.variants.length;
       }
 
+      const fixedVariantPricing = Array.isArray(p.variantPricing)
+        ? p.variantPricing.map((variantPricing: any) => ({
+          ...variantPricing,
+          marginPercent: FIXED_PROFIT_MARGIN_PERCENT,
+          profitMargin: FIXED_PROFIT_MARGIN_PERCENT,
+          margin: FIXED_PROFIT_MARGIN_PERCENT,
+        }))
+        : [];
+
       let totalStock = p.stock || 0;
       if (!totalStock && p.variants?.length > 0) {
         totalStock = p.variants.reduce((sum: number, v: any) => sum + (v.stock || v.variantQuantity || 0), 0);
@@ -199,7 +210,7 @@ export async function POST(req: NextRequest) {
         cjCategoryId: p.cjCategoryId || undefined,
         supabaseCategoryId: p.supabaseCategoryId || undefined,
         supabaseCategorySlug: p.supabaseCategorySlug || undefined,
-        variantPricing: p.variantPricing || [],
+        variantPricing: fixedVariantPricing,
         sizeChartData: p.sizeChartData || undefined,
         specifications: p.specifications || undefined,
         sellingPoints: p.sellingPoints || undefined,
@@ -211,7 +222,7 @@ export async function POST(req: NextRequest) {
         cjTotalCost: p.cjTotalCost || undefined,
         cjShippingCost: p.cjShippingCost || undefined,
         cjProductCost: p.cjProductCost || undefined,
-        profitMargin: p.profitMargin || undefined,
+        profitMargin: FIXED_PROFIT_MARGIN_PERCENT,
       });
 
       if (result.success) {

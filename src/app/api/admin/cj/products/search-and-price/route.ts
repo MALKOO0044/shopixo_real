@@ -15,6 +15,8 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 export const runtime = 'nodejs';
 
+const FIXED_PROFIT_MARGIN_PERCENT = 42;
+
 function getSupabaseAdmin() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -462,7 +464,7 @@ async function handleSearch(req: Request, isPost: boolean) {
     const minPrice = Number(searchParams.get('minPrice') || 0);
     const maxPrice = Number(searchParams.get('maxPrice') || 1000);
     const minStock = Number(searchParams.get('minStock') || 0);
-    const profitMargin = Math.max(1, Number(searchParams.get('profitMargin') || 8));
+    const profitMargin = FIXED_PROFIT_MARGIN_PERCENT;
     const popularity = searchParams.get('popularity') || 'any';
     const minRating = searchParams.get('minRating') || 'any';
     const freeShippingOnly = searchParams.get('freeShippingOnly') === '1';
@@ -2124,12 +2126,8 @@ async function handleSearch(req: Request, isPost: boolean) {
           break;
         }
       } else {
-        // Multi-variant product - check heaviest variants first to find HIGHEST shipping cost
-        // This ensures we match CJ's "According to Shipping Method" which uses the heaviest variant
-        const MAX_VARIANTS_TO_CHECK = 2; // Only check 2 variants (heaviest first) to stay within timeout
-        
-        // Sort variants by weight (descending) to check heaviest first
-        // CJ shipping cost is primarily driven by weight, so heaviest = highest shipping
+        // Multi-variant product - evaluate all variants and pick the true maximum shipping.
+        // We still sort by weight (descending) to hit likely high-shipping variants earlier.
         const sortedVariants = [...variants].sort((a, b) => {
           const weightA = Number(a.packWeight || a.variantWeight || a.weight || 0);
           const weightB = Number(b.packWeight || b.variantWeight || b.weight || 0);
@@ -2146,13 +2144,9 @@ async function handleSearch(req: Request, isPost: boolean) {
           logisticName: string;
         }> = [];
         
-        for (let i = 0; i < Math.min(sortedVariants.length, MAX_VARIANTS_TO_CHECK); i++) {
-          // Stop checking if we hit rate limit or time budget exceeded
+        for (let i = 0; i < sortedVariants.length; i++) {
+          // Stop checking if we hit repeated rate limits
           if (consecutiveRateLimitErrors >= 3) break;
-          if (Date.now() - startTime > 50000) {
-            console.log(`[Search&Price] Time budget exceeded (50s), stopping variant checks`);
-            break;
-          }
           
           const variant = sortedVariants[i];
           const variantId = String(variant.vid || variant.variantId || variant.id || '');
@@ -2247,7 +2241,7 @@ async function handleSearch(req: Request, isPost: boolean) {
           }
         }
         
-        // Now pick the variant with the HIGHEST shipping cost (matches CJ's heaviest variant logic)
+        // Now pick the TRUE highest shipping quote across all checked variants.
         if (variantShippingQuotes.length > 0) {
           // Sort by shipping price descending and take the highest
           variantShippingQuotes.sort((a, b) => b.shippingPriceUSD - a.shippingPriceUSD);

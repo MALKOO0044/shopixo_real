@@ -11,6 +11,8 @@ import { extractCjProductVideoUrl } from '@/lib/cj/video';
 import { normalizeSingleSize, normalizeSizeList } from '@/lib/cj/size-normalization';
 import { build4kVideoDelivery } from '@/lib/video/delivery';
 
+const FIXED_PROFIT_MARGIN_PERCENT = 42;
+
 function getSupabaseAdmin() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -115,8 +117,7 @@ export async function GET(
       );
     }
 
-    const { searchParams } = new URL(req.url);
-    const profitMargin = Math.max(1, Number(searchParams.get('profitMargin') || 8));
+    const profitMargin = FIXED_PROFIT_MARGIN_PERCENT;
 
     console.log(`[ProductDetails] Fetching full details for product ${pid}`);
     const startTime = Date.now();
@@ -620,7 +621,7 @@ export async function GET(
         /CJ\s*Packet\s*Ordinary/i.test(o.name || '') ||
         o.code === 'CJPACKETORDINARY' ||
         /ordinary/i.test(o.code || '')
-      ) || options[0];
+      );
     };
 
     const calculateSellPriceWithMargin = (landedCostSar: number, marginPercent: number): number => {
@@ -628,9 +629,28 @@ export async function GET(
       return computeRetailFromLanded(landedCostSar, { margin });
     };
 
-    // Process up to 10 variants for shipping quotes
-    const variantsToProcess = variants.slice(0, 10);
-    
+    // Process all variants to guarantee a true product-wide maximum shipping quote.
+    const variantsToProcess = variants;
+    const variantPricingBases: Array<{
+      variantId: string;
+      variantSku: string;
+      variantPriceUSD: number;
+      costSAR: number;
+      variantName?: string;
+      variantImage?: string;
+      size?: string;
+      color?: string;
+      stock?: number;
+      cjStock?: number;
+      factoryStock?: number;
+      shippingAvailable: boolean;
+      shippingPriceUSD: number;
+      shippingPriceSAR: number;
+      deliveryDays: string;
+      logisticName?: string;
+      shippingError?: string;
+    }> = [];
+
     for (const variant of variantsToProcess) {
       const variantId = String(variant.vid || variant.variantId || variant.id || '');
       const variantSku = String(variant.variantSku || variant.sku || variantId);
@@ -687,11 +707,37 @@ export async function GET(
         variantName: variantName,
       });
 
-      if (shippingAvailable) {
-        const totalCostSAR = costSAR + shippingPriceSAR;
+      variantPricingBases.push({
+        variantId,
+        variantSku,
+        variantPriceUSD,
+        costSAR,
+        variantName,
+        variantImage,
+        size,
+        color,
+        stock: variantStock?.totalStock,
+        cjStock: variantStock?.cjStock,
+        factoryStock: variantStock?.factoryStock,
+        shippingAvailable,
+        shippingPriceUSD,
+        shippingPriceSAR,
+        deliveryDays,
+        logisticName,
+        shippingError,
+      });
+    }
+
+    const highestShippingQuote = variantPricingBases
+      .filter((v) => v.shippingAvailable && v.shippingPriceUSD > 0 && typeof v.logisticName === 'string')
+      .sort((a, b) => b.shippingPriceUSD - a.shippingPriceUSD)[0];
+
+    if (highestShippingQuote) {
+      for (const variantBase of variantPricingBases) {
+        const totalCostSAR = variantBase.costSAR + highestShippingQuote.shippingPriceSAR;
         const sellPriceSAR = calculateSellPriceWithMargin(totalCostSAR, profitMargin);
         const profitSAR = sellPriceSAR - totalCostSAR;
-        const totalCostUSD = Number((variantPriceUSD + shippingPriceUSD).toFixed(2));
+        const totalCostUSD = Number((variantBase.variantPriceUSD + highestShippingQuote.shippingPriceUSD).toFixed(2));
         const sellPriceUSD = sarToUsd(sellPriceSAR);
         const profitUSD = Number((sellPriceUSD - totalCostUSD).toFixed(2));
         const marginPercent = sellPriceUSD > 0
@@ -699,14 +745,14 @@ export async function GET(
           : 0;
 
         pricedVariants.push({
-          variantId,
-          variantSku,
-          variantPriceUSD,
-          shippingAvailable,
-          shippingPriceUSD,
-          shippingPriceSAR,
-          deliveryDays,
-          logisticName,
+          variantId: variantBase.variantId,
+          variantSku: variantBase.variantSku,
+          variantPriceUSD: variantBase.variantPriceUSD,
+          shippingAvailable: true,
+          shippingPriceUSD: highestShippingQuote.shippingPriceUSD,
+          shippingPriceSAR: highestShippingQuote.shippingPriceSAR,
+          deliveryDays: highestShippingQuote.deliveryDays,
+          logisticName: highestShippingQuote.logisticName,
           sellPriceSAR,
           sellPriceUSD,
           totalCostSAR,
@@ -714,40 +760,40 @@ export async function GET(
           profitSAR,
           profitUSD,
           marginPercent,
-          variantName,
-          variantImage,
-          size,
-          color,
-          stock: variantStock?.totalStock,
-          cjStock: variantStock?.cjStock,
-          factoryStock: variantStock?.factoryStock,
-          error: shippingError,
+          variantName: variantBase.variantName,
+          variantImage: variantBase.variantImage,
+          size: variantBase.size,
+          color: variantBase.color,
+          stock: variantBase.stock,
+          cjStock: variantBase.cjStock,
+          factoryStock: variantBase.factoryStock,
         });
-      } else {
-        // Include variant even without shipping for display
+      }
+    } else {
+      for (const variantBase of variantPricingBases) {
         pricedVariants.push({
-          variantId,
-          variantSku,
-          variantPriceUSD,
+          variantId: variantBase.variantId,
+          variantSku: variantBase.variantSku,
+          variantPriceUSD: variantBase.variantPriceUSD,
           shippingAvailable: false,
           shippingPriceUSD: 0,
           shippingPriceSAR: 0,
           deliveryDays: 'Unknown',
           sellPriceSAR: 0,
           sellPriceUSD: 0,
-          totalCostSAR: costSAR,
-          totalCostUSD: Number(variantPriceUSD.toFixed(2)),
+          totalCostSAR: variantBase.costSAR,
+          totalCostUSD: Number(variantBase.variantPriceUSD.toFixed(2)),
           profitSAR: 0,
           profitUSD: 0,
           marginPercent: 0,
-          variantName,
-          variantImage,
-          size,
-          color,
-          stock: variantStock?.totalStock,
-          cjStock: variantStock?.cjStock,
-          factoryStock: variantStock?.factoryStock,
-          error: shippingError || 'No shipping data',
+          variantName: variantBase.variantName,
+          variantImage: variantBase.variantImage,
+          size: variantBase.size,
+          color: variantBase.color,
+          stock: variantBase.stock,
+          cjStock: variantBase.cjStock,
+          factoryStock: variantBase.factoryStock,
+          error: variantBase.shippingError || 'No shipping data',
         });
       }
     }

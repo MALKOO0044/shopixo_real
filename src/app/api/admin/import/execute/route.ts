@@ -182,7 +182,7 @@ function getSupabaseAdmin() {
 
 const DEFAULT_SHIPPING_USD = 5;
 const DEFAULT_PAYMENT_FEE_PERCENT = 2.9;
-const DEFAULT_MARGIN_PERCENT = 40;
+const DEFAULT_MARGIN_PERCENT = 42;
 const DEFAULT_MIN_PROFIT_USD = 10;
 const IMPORT_NON_PRODUCT_IMAGE_RE = /(sprite|icon|favicon|logo|placeholder|blank|loading|alipay|wechat|whatsapp|kefu|service|avatar|thumb|thumbnail|small|tiny|mini|sizechart|size\s*chart|chart|table|guide|tips|hot|badge|flag|promo|banner|sale|discount|qr)/i;
 const IMPORT_INLINE_SIZE_TOKEN_RE = /[_-](\d{2,4})x(\d{2,4})(?=(?:\.|[_?&#]))/i;
@@ -213,7 +213,7 @@ async function calculateRetailPrice(costUsd: number, shippingUsd: number | null,
   };
 
   const paymentFeePercent = pricingRule.payment_fee_percent ?? DEFAULT_PAYMENT_FEE_PERCENT;
-  const marginPercent = pricingRule.margin_percent ?? DEFAULT_MARGIN_PERCENT;
+  const marginPercent = DEFAULT_MARGIN_PERCENT;
   const minProfitUsd = pricingRule.min_profit_usd ?? pricingRule.min_profit_sar ?? DEFAULT_MIN_PROFIT_USD;
 
   const effectiveShippingUsd = shippingUsd ?? DEFAULT_SHIPPING_USD;
@@ -1028,7 +1028,7 @@ export async function POST(req: NextRequest) {
             shopixo_product_id: productId,
             imported_at: new Date().toISOString(),
             calculated_retail_sar: resolvedMinPriceSar,
-            margin_applied: null
+            margin_applied: DEFAULT_MARGIN_PERCENT,
           })
           .eq('id', qp.id);
 
