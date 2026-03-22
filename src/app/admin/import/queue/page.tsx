@@ -8,6 +8,7 @@ import {
   Clock,
   Package,
   Download,
+  RefreshCw,
   Edit,
   Trash2,
   Star,
@@ -19,7 +20,6 @@ import {
   Eye,
   Play,
 } from "lucide-react";
-import { normalizeDisplayedRating } from "@/lib/rating/engine";
 import { sarToUsd } from "@/lib/pricing";
 
 type QueueProduct = {
@@ -194,6 +194,7 @@ export default function QueuePage() {
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [actionLoading, setActionLoading] = useState(false);
+  const [recomputeLoading, setRecomputeLoading] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editData, setEditData] = useState<Partial<QueueProduct>>({});
 
@@ -287,6 +288,60 @@ export default function QueuePage() {
       setError(e?.message || "Action failed");
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const handleRecomputeRatings = async () => {
+    const confirmed = confirm(
+      "Recompute queue ratings now? This applies the rating engine to current queue rows and updates displayed rating/confidence."
+    );
+    if (!confirmed) return;
+
+    setRecomputeLoading(true);
+    setError(null);
+    try {
+      const statuses = statusFilter === "all"
+        ? ["pending", "approved", "rejected", "imported"]
+        : [statusFilter];
+
+      const batchSize = 2000;
+      let offset = 0;
+      let processedTotal = 0;
+      let updatedTotal = 0;
+      let failuresTotal = 0;
+
+      while (true) {
+        const res = await fetch("/api/admin/ratings/recompute-queue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            statuses,
+            limit: batchSize,
+            offset,
+            dryRun: false,
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || "Failed to recompute queue ratings");
+        }
+
+        const processed = Number(data.processed) || 0;
+        processedTotal += processed;
+        updatedTotal += Number(data.updated) || 0;
+        failuresTotal += Number(data.failures) || 0;
+
+        if (processed < batchSize) break;
+        offset += processed;
+      }
+
+      await fetchProducts();
+      alert(`Queue ratings recomputed. Processed: ${processedTotal}, Updated: ${updatedTotal}, Failures: ${failuresTotal}.`);
+    } catch (e: any) {
+      setError(e?.message || "Failed to recompute queue ratings");
+    } finally {
+      setRecomputeLoading(false);
     }
   };
 
@@ -433,7 +488,7 @@ export default function QueuePage() {
       p.cj_price_usd,
       resolveQueueMarginPercent(p)?.toFixed(1) ?? "",
       p.stock_total,
-      normalizeDisplayedRating(p.displayed_rating).toFixed(1),
+      resolveQueueDisplayedRating(p).toFixed(1),
       p.status,
       new Date(p.created_at).toLocaleDateString(),
     ]);
@@ -458,6 +513,14 @@ export default function QueuePage() {
           <p className="text-sm text-gray-500 mt-1">قائمة انتظار الاستيراد - Review and approve products</p>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            onClick={handleRecomputeRatings}
+            disabled={recomputeLoading || actionLoading}
+            className="flex items-center gap-2 px-4 py-2 border rounded-lg text-sm hover:bg-gray-50 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${recomputeLoading ? "animate-spin" : ""}`} />
+            {recomputeLoading ? "Recomputing..." : "Recompute Ratings"}
+          </button>
           <button
             onClick={exportCsv}
             className="flex items-center gap-2 px-4 py-2 border rounded-lg text-sm hover:bg-gray-50"
@@ -854,7 +917,7 @@ export default function QueuePage() {
                     <td className="px-4 py-3">
                       <div className="space-y-1">
                         {(() => {
-                          const rating = normalizeDisplayedRating(product.displayed_rating);
+                          const rating = resolveQueueDisplayedRating(product);
                           const confidence =
                             typeof product.rating_confidence === "number"
                               ? product.rating_confidence >= 0.75
@@ -921,7 +984,7 @@ export default function QueuePage() {
                           <Edit className="h-4 w-4" />
                         </button>
                         <Link
-                          href={`/admin/cj/product/${product.cj_product_id}`}
+                          href={`/admin/cj/product/${encodeURIComponent(product.cj_product_id)}?queueId=${product.id}`}
                           className="p-1.5 text-gray-600 hover:bg-gray-100 rounded"
                           title="View Details"
                         >

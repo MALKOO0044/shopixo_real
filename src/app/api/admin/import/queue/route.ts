@@ -33,11 +33,21 @@ export async function GET(req: NextRequest) {
     const status = searchParams.get("status") || "pending";
     const batchId = searchParams.get("batch_id");
     const category = searchParams.get("category");
+    const queueIdParam = searchParams.get("queue_id");
+    const cjProductId = (searchParams.get("cj_product_id") || "").trim();
     const limit = Math.min(100, Number(searchParams.get("limit") || 50));
     const offset = Number(searchParams.get("offset") || 0);
+    const queueId = Number(queueIdParam);
+    const hasQueueIdFilter = Number.isFinite(queueId) && queueId > 0;
 
     let query = supabase.from('product_queue').select('*');
     
+    if (hasQueueIdFilter) {
+      query = query.eq('id', Math.floor(queueId));
+    }
+    if (cjProductId) {
+      query = query.eq('cj_product_id', cjProductId);
+    }
     if (status !== "all") {
       query = query.eq('status', status);
     }

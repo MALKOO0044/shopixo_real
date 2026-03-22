@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { slugify } from "@/lib/utils/slug";
 import { hasColumn, hasTable } from "@/lib/db-features";
 import { linkProductToMultipleCategories } from "@/lib/category-intelligence";
-import { computeRating, normalizeDisplayedRating } from "@/lib/rating/engine";
+import { computeRating } from "@/lib/rating/engine";
 import { sarToUsd } from "@/lib/pricing";
 import { normalizeCjImageKey, prioritizeCjHeroImage } from "@/lib/cj/image-gallery";
 import { requiresVideoForMediaMode } from "@/lib/video/delivery";
@@ -451,7 +451,7 @@ function toPositiveNumberOrNull(value: unknown): number | null {
 function normalizeImportedRatingValue(value: unknown): number | null {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return null;
-  return normalizeDisplayedRating(n);
+  return Math.max(0, Math.min(5, n));
 }
 
 function normalizeImportedReviewCount(value: unknown): number | null {

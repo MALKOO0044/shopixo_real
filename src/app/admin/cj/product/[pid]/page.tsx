@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import {
   ArrowLeft,
   AlertTriangle,
@@ -29,7 +30,7 @@ import PreviewPageFive from '@/components/admin/import/preview/PreviewPageFive'
 import PreviewPageSix from '@/components/admin/import/preview/PreviewPageSix'
 import PreviewPageSeven from '@/components/admin/import/preview/PreviewPageSeven'
 import { normalizeDisplayedRating } from '@/lib/rating/engine'
-import { sarToUsd } from '@/lib/pricing'
+import { sarToUsd, usdToSar } from '@/lib/pricing'
 
 function ImageWithFallback({ src, alt, className }: { src: string; alt: string; className?: string }) {
   const [error, setError] = useState(false)
@@ -63,11 +64,315 @@ function ImageWithFallback({ src, alt, className }: { src: string; alt: string; 
 
 type TabType = 'overview' | 'images' | 'specs' | 'inventory' | 'shipping' | 'variants' | 'aiMedia'
 
+function parseJsonMaybe(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  try {
+    return JSON.parse(value)
+  } catch {
+    return value
+  }
+}
+
+function parseArray(value: unknown): any[] {
+  const parsed = parseJsonMaybe(value)
+  return Array.isArray(parsed) ? parsed : []
+}
+
+function parseStringArray(value: unknown): string[] {
+  return parseArray(value)
+    .map((entry) => String(entry ?? '').trim())
+    .filter(Boolean)
+}
+
+function parseObject(value: unknown): Record<string, any> {
+  const parsed = parseJsonMaybe(value)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+  return parsed as Record<string, any>
+}
+
+function toFiniteNumber(value: unknown, fallback = 0): number {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : fallback
+}
+
+function toPositiveNumberOrUndefined(value: unknown): number | undefined {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : undefined
+}
+
+function normalizeVideoDeliveryMode(value: unknown): 'native' | 'enhanced' | 'passthrough' | undefined {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (normalized === 'native' || normalized === 'enhanced' || normalized === 'passthrough') {
+    return normalized
+  }
+  return undefined
+}
+
+function normalizeVideoQualityHint(value: unknown): '4k' | 'hd' | 'sd' | 'unknown' | undefined {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (normalized === '4k' || normalized === 'hd' || normalized === 'sd' || normalized === 'unknown') {
+    return normalized
+  }
+  return undefined
+}
+
+function normalizeInventoryStatus(value: unknown): 'ok' | 'error' | 'partial' | undefined {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (normalized === 'ok' || normalized === 'error' || normalized === 'partial') {
+    return normalized
+  }
+  return undefined
+}
+
+function buildQueueFallbackProduct(row: Record<string, any>, pid: string): PricedProduct {
+  const images = parseStringArray(row.images)
+  const variantPricing = parseArray(row.variant_pricing)
+  const fallbackVariants = parseArray(row.variants)
+  const sourceVariants = variantPricing.length > 0 ? variantPricing : fallbackVariants
+
+  const processingDays = toFiniteNumber(row.processing_days, 0)
+  const deliveryMin = toFiniteNumber(row.delivery_days_min, 0)
+  const deliveryMax = toFiniteNumber(row.delivery_days_max, 0)
+  const deliveryLabel = deliveryMin > 0 && deliveryMax > 0
+    ? `${deliveryMin}-${deliveryMax} days`
+    : deliveryMax > 0
+      ? `${deliveryMax} days`
+      : 'Unknown'
+
+  const mappedVariants = sourceVariants.map((variant, index) => {
+    const variantPriceUSD = toFiniteNumber(
+      variant?.costPrice ?? variant?.variantPriceUSD ?? variant?.variantPriceUsd ?? variant?.variantPrice,
+      0
+    )
+    const shippingPriceUSD = toFiniteNumber(
+      variant?.shippingCost ?? variant?.shippingPriceUSD ?? variant?.shipping_price_usd ?? row.cj_shipping_cost,
+      0
+    )
+
+    const explicitSellSar = toFiniteNumber(variant?.price ?? variant?.sellPriceSAR ?? variant?.sellPriceSar, 0)
+    const explicitSellUsd = toFiniteNumber(variant?.priceUsd ?? variant?.sellPriceUSD ?? variant?.sellPriceUsd, 0)
+
+    const sellPriceUSD = explicitSellUsd > 0
+      ? explicitSellUsd
+      : explicitSellSar > 0
+        ? sarToUsd(explicitSellSar)
+        : 0
+    const sellPriceSAR = explicitSellSar > 0
+      ? explicitSellSar
+      : sellPriceUSD > 0
+        ? usdToSar(sellPriceUSD)
+        : 0
+
+    const totalCostUSD = toFiniteNumber(variant?.totalCostUSD, variantPriceUSD + shippingPriceUSD)
+    const totalCostSAR = toFiniteNumber(variant?.totalCostSAR, usdToSar(totalCostUSD))
+    const profitUSD = toFiniteNumber(variant?.profitUSD, sellPriceUSD - totalCostUSD)
+    const profitSAR = toFiniteNumber(variant?.profitSAR, sellPriceSAR - totalCostSAR)
+
+    const marginCandidate = toFiniteNumber(
+      variant?.marginPercent ?? variant?.profitMargin ?? variant?.margin ?? row.profit_margin,
+      0
+    )
+    const marginPercent = marginCandidate > 0 ? marginCandidate : undefined
+
+    const stock = toFiniteNumber(variant?.stock ?? variant?.stockQty ?? variant?.quantity, 0)
+    const cjStock = toFiniteNumber(variant?.cjStock, stock)
+    const factoryStock = toFiniteNumber(variant?.factoryStock, 0)
+
+    return {
+      variantId: String(variant?.variantId ?? variant?.vid ?? index + 1),
+      variantSku: String(variant?.sku ?? variant?.variantSku ?? variant?.cjSku ?? `VAR-${index + 1}`),
+      variantPriceUSD,
+      shippingAvailable: true,
+      shippingPriceUSD,
+      shippingPriceSAR: usdToSar(shippingPriceUSD),
+      deliveryDays: deliveryLabel,
+      logisticName: typeof variant?.logisticName === 'string' ? variant.logisticName : undefined,
+      sellPriceSAR,
+      sellPriceUSD: sellPriceUSD > 0 ? sellPriceUSD : undefined,
+      totalCostSAR,
+      totalCostUSD: totalCostUSD > 0 ? totalCostUSD : undefined,
+      profitSAR,
+      profitUSD: profitUSD !== 0 ? profitUSD : undefined,
+      marginPercent,
+      stock,
+      cjStock,
+      factoryStock,
+      variantName: typeof variant?.variantName === 'string' ? variant.variantName : undefined,
+      variantImage: typeof variant?.colorImage === 'string'
+        ? variant.colorImage
+        : typeof variant?.variantImage === 'string'
+          ? variant.variantImage
+          : undefined,
+      size: typeof variant?.size === 'string' ? variant.size : undefined,
+      color: typeof variant?.color === 'string' ? variant.color : undefined,
+      allShippingOptions: [],
+    }
+  })
+
+  const sellUsdCandidates = mappedVariants
+    .map((variant) => Number((variant as any).sellPriceUSD))
+    .filter((value) => Number.isFinite(value) && value > 0)
+  const sellSarCandidates = mappedVariants
+    .map((variant) => Number(variant.sellPriceSAR))
+    .filter((value) => Number.isFinite(value) && value > 0)
+
+  const directRetailSar = toFiniteNumber(row.calculated_retail_sar, 0)
+  if (sellSarCandidates.length === 0 && directRetailSar > 0) {
+    sellSarCandidates.push(directRetailSar)
+  }
+  if (sellUsdCandidates.length === 0 && directRetailSar > 0) {
+    sellUsdCandidates.push(sarToUsd(directRetailSar))
+  }
+
+  const minPriceUSD = sellUsdCandidates.length > 0 ? Math.min(...sellUsdCandidates) : 0
+  const maxPriceUSD = sellUsdCandidates.length > 0 ? Math.max(...sellUsdCandidates) : minPriceUSD
+  const avgPriceUSD = sellUsdCandidates.length > 0
+    ? sellUsdCandidates.reduce((sum, value) => sum + value, 0) / sellUsdCandidates.length
+    : minPriceUSD
+
+  const minPriceSAR = sellSarCandidates.length > 0 ? Math.min(...sellSarCandidates) : usdToSar(minPriceUSD)
+  const maxPriceSAR = sellSarCandidates.length > 0 ? Math.max(...sellSarCandidates) : usdToSar(maxPriceUSD)
+  const avgPriceSAR = sellSarCandidates.length > 0
+    ? sellSarCandidates.reduce((sum, value) => sum + value, 0) / sellSarCandidates.length
+    : usdToSar(avgPriceUSD)
+
+  const stockFromVariants = mappedVariants.reduce((sum, variant) => sum + Number((variant as any).stock || 0), 0)
+  const stock = toFiniteNumber(row.stock_total, stockFromVariants)
+
+  const rawColorImageMap = parseObject(row.color_image_map)
+  const colorImageMap: Record<string, string> = {}
+  for (const [color, imageUrl] of Object.entries(rawColorImageMap)) {
+    if (typeof imageUrl === 'string' && imageUrl.trim()) {
+      colorImageMap[String(color)] = imageUrl.trim()
+    }
+  }
+
+  const availableColors = parseStringArray(row.available_colors)
+  const availableSizes = parseStringArray(row.available_sizes)
+  const availableModels = parseStringArray(row.available_models)
+  const sizeChartImages = parseStringArray(row.size_chart_images)
+
+  const parsedInventory = parseObject(row.inventory_by_warehouse)
+  const parsedWarehouses = parseArray(parsedInventory.warehouses)
+  const inventory = parsedWarehouses.length > 0 || Number.isFinite(Number(parsedInventory.totalAvailable))
+    ? {
+        totalCJ: toFiniteNumber(parsedInventory.totalCJ, 0),
+        totalFactory: toFiniteNumber(parsedInventory.totalFactory, 0),
+        totalAvailable: toFiniteNumber(parsedInventory.totalAvailable, stock),
+        warehouses: parsedWarehouses.map((entry: any, index: number) => ({
+          areaId: toFiniteNumber(entry?.areaId, index + 1),
+          areaName: String(entry?.areaName ?? entry?.warehouseName ?? 'Warehouse').trim() || 'Warehouse',
+          countryCode: String(entry?.countryCode ?? '').trim(),
+          totalInventory: toFiniteNumber(entry?.totalInventory, 0),
+          cjInventory: toFiniteNumber(entry?.cjInventory, 0),
+          factoryInventory: toFiniteNumber(entry?.factoryInventory, 0),
+        })),
+      }
+    : undefined
+
+  const inventoryVariants = mappedVariants.map((variant, index) => {
+    const fallbackLabel = variant.variantName || variant.size || variant.color || variant.variantSku || `Variant ${index + 1}`
+    return {
+      variantId: variant.variantId,
+      sku: variant.variantSku,
+      shortName: fallbackLabel,
+      priceUSD: toFiniteNumber(variant.variantPriceUSD, 0),
+      cjStock: toFiniteNumber((variant as any).cjStock, 0),
+      factoryStock: toFiniteNumber((variant as any).factoryStock, 0),
+      totalStock: toFiniteNumber((variant as any).stock, 0),
+    }
+  })
+
+  const reviewCount = toFiniteNumber(row.review_count, 0)
+  const displayedRating = toPositiveNumberOrUndefined(row.displayed_rating)
+  const ratingConfidence = toPositiveNumberOrUndefined(row.rating_confidence)
+
+  const estimatedProcessingDays = processingDays > 0
+    ? `${processingDays} day${processingDays === 1 ? '' : 's'}`
+    : undefined
+  const estimatedDeliveryDays = deliveryMin > 0 && deliveryMax > 0
+    ? `${deliveryMin}-${deliveryMax} days`
+    : deliveryMax > 0
+      ? `${deliveryMax} days`
+      : undefined
+
+  return {
+    pid,
+    cjSku: String(row.cj_sku || row.cj_product_id || `CJ-${pid}`),
+    storeSku: typeof row.store_sku === 'string' ? row.store_sku : undefined,
+    name: String(row.name_en || `CJ Product ${pid}`),
+    images,
+    minPriceSAR,
+    maxPriceSAR,
+    avgPriceSAR,
+    minPriceUSD: minPriceUSD > 0 ? minPriceUSD : undefined,
+    maxPriceUSD: maxPriceUSD > 0 ? maxPriceUSD : undefined,
+    avgPriceUSD: avgPriceUSD > 0 ? avgPriceUSD : undefined,
+    profitMarginApplied: toPositiveNumberOrUndefined(row.profit_margin) ?? 42,
+    stock,
+    listedNum: toFiniteNumber(row.total_sales, 0),
+    totalVerifiedInventory: inventory?.totalCJ,
+    totalUnVerifiedInventory: inventory?.totalFactory,
+    inventory,
+    inventoryStatus: normalizeInventoryStatus(row.inventory_status),
+    inventoryErrorMessage: typeof row.inventory_error_message === 'string' ? row.inventory_error_message : undefined,
+    variants: mappedVariants,
+    inventoryVariants,
+    successfulVariants: mappedVariants.length,
+    totalVariants: mappedVariants.length,
+    description: typeof row.description_en === 'string' ? row.description_en : undefined,
+    overview: typeof row.overview === 'string' ? row.overview : undefined,
+    productInfo: typeof row.product_info === 'string' ? row.product_info : undefined,
+    sizeInfo: typeof row.size_info === 'string' ? row.size_info : undefined,
+    productNote: typeof row.product_note === 'string' ? row.product_note : undefined,
+    packingList: typeof row.packing_list === 'string' ? row.packing_list : undefined,
+    displayedRating,
+    ratingConfidence,
+    rating: toPositiveNumberOrUndefined(row.supplier_rating),
+    reviewCount: reviewCount > 0 ? Math.floor(reviewCount) : undefined,
+    categoryName: typeof row.category_name === 'string' && row.category_name.trim()
+      ? row.category_name
+      : typeof row.category === 'string'
+        ? row.category
+        : undefined,
+    productWeight: toPositiveNumberOrUndefined(row.weight_g),
+    packLength: toPositiveNumberOrUndefined(row.pack_length),
+    packWidth: toPositiveNumberOrUndefined(row.pack_width),
+    packHeight: toPositiveNumberOrUndefined(row.pack_height),
+    material: typeof row.material === 'string' ? row.material : undefined,
+    productType: typeof row.product_type === 'string' ? row.product_type : undefined,
+    sizeChartImages: sizeChartImages.length > 0 ? sizeChartImages : undefined,
+    processingTimeHours: processingDays > 0 ? Math.round(processingDays * 24) : undefined,
+    deliveryTimeHours: deliveryMax > 0 ? Math.round(deliveryMax * 24) : undefined,
+    estimatedProcessingDays,
+    estimatedDeliveryDays,
+    originCountry: typeof row.origin_country === 'string' ? row.origin_country : undefined,
+    hsCode: typeof row.hs_code === 'string' ? row.hs_code : undefined,
+    videoUrl: typeof row.video_4k_url === 'string' && row.video_4k_url.trim()
+      ? row.video_4k_url
+      : typeof row.video_url === 'string'
+        ? row.video_url
+        : undefined,
+    videoSourceUrl: typeof row.video_source_url === 'string' ? row.video_source_url : undefined,
+    video4kUrl: typeof row.video_4k_url === 'string' ? row.video_4k_url : undefined,
+    videoDeliveryMode: normalizeVideoDeliveryMode(row.video_delivery_mode),
+    videoQualityGatePassed: typeof row.video_quality_gate_passed === 'boolean' ? row.video_quality_gate_passed : undefined,
+    videoSourceQualityHint: normalizeVideoQualityHint(row.video_source_quality_hint),
+    availableSizes: availableSizes.length > 0 ? availableSizes : undefined,
+    availableColors: availableColors.length > 0 ? availableColors : undefined,
+    availableModels: availableModels.length > 0 ? availableModels : undefined,
+    colorImageMap: Object.keys(colorImageMap).length > 0 ? colorImageMap : undefined,
+  }
+}
+
 export default function CjProductAdminPage({ params }: { params: { pid: string } }) {
+  const searchParams = useSearchParams()
   const pid = decodeURIComponent(params.pid)
+  const queueId = (searchParams.get('queueId') || '').trim()
   const [loading, setLoading] = useState(true)
   const [product, setProduct] = useState<PricedProduct | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [sourceNotice, setSourceNotice] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [activeTab, setActiveTab] = useState<TabType>('overview')
   const [selectedImageIndex, setSelectedImageIndex] = useState(0)
@@ -76,28 +381,69 @@ export default function CjProductAdminPage({ params }: { params: { pid: string }
 
   useEffect(() => {
     let mounted = true
+
+    async function loadQueueFallbackProduct(): Promise<PricedProduct | null> {
+      const params = new URLSearchParams({ status: 'all', limit: '1' })
+      if (queueId) {
+        params.set('queue_id', queueId)
+      } else {
+        params.set('cj_product_id', pid)
+      }
+
+      const res = await fetch(`/api/admin/import/queue?${params.toString()}`, { cache: 'no-store' })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok || !payload?.ok) return null
+
+      const row = Array.isArray(payload?.products) ? payload.products[0] : null
+      if (!row || typeof row !== 'object') return null
+
+      return buildQueueFallbackProduct(row as Record<string, any>, pid)
+    }
+
     async function load() {
       setLoading(true)
       setErr(null)
+      setSourceNotice(null)
       try {
         const res = await fetch(`/api/admin/cj/products/${encodeURIComponent(pid)}/details`, { cache: 'no-store' })
-        const j = await res.json()
+        const j = await res.json().catch(() => ({}))
         if (!mounted) return
         if (!res.ok || !j.ok) {
-          setErr(j?.error || 'Failed to load product details')
+          const queueFallback = await loadQueueFallbackProduct().catch(() => null)
+          if (!mounted) return
+
+          if (queueFallback) {
+            setProduct(queueFallback)
+            setErr(null)
+            setSourceNotice('Loaded queue snapshot because this product is no longer available in CJ API.')
+          } else {
+            setProduct(null)
+            setErr(j?.error || 'Failed to load product details')
+          }
         } else {
           setProduct(j.product)
+          setErr(null)
         }
       } catch (e: any) {
         if (!mounted) return
-        setErr(e?.message || String(e))
+        const queueFallback = await loadQueueFallbackProduct().catch(() => null)
+        if (!mounted) return
+
+        if (queueFallback) {
+          setProduct(queueFallback)
+          setErr(null)
+          setSourceNotice('Loaded queue snapshot because this product is no longer available in CJ API.')
+        } else {
+          setProduct(null)
+          setErr(e?.message || String(e))
+        }
       } finally {
         if (mounted) setLoading(false)
       }
     }
     load()
     return () => { mounted = false }
-  }, [pid])
+  }, [pid, queueId])
 
   async function forceResync() {
     setSyncing(true)
@@ -335,6 +681,15 @@ export default function CjProductAdminPage({ params }: { params: { pid: string }
             <span className={queueMessage.includes('added') ? 'text-green-800' : 'text-red-800'}>
               {queueMessage}
             </span>
+          </div>
+        </div>
+      )}
+
+      {sourceNotice && (
+        <div className="max-w-7xl mx-auto px-4 mt-4">
+          <div className="p-4 rounded-lg flex items-center gap-3 bg-blue-50 border border-blue-200">
+            <AlertTriangle className="h-5 w-5 text-blue-600" />
+            <span className="text-blue-800">{sourceNotice}</span>
           </div>
         </div>
       )}
