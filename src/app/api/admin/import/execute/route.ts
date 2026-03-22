@@ -448,6 +448,28 @@ function toPositiveNumberOrNull(value: unknown): number | null {
   return n;
 }
 
+function normalizeImportedRatingValue(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return normalizeDisplayedRating(n);
+}
+
+function normalizeImportedReviewCount(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.floor(n);
+}
+
+function normalizeImportedRatingConfidence(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.max(0.05, Math.min(1, n));
+}
+
+function sanitizeQueueGalleryImages(candidates: unknown[], maxImages: number = 50): string[] {
+  return sanitizeImportProductImages(candidates, maxImages);
+}
+
 function normalizeVariantToken(value: unknown): string {
   return String(value ?? '').trim().toLowerCase();
 }
@@ -663,8 +685,6 @@ export async function POST(req: NextRequest) {
         }
 
         if (existing) {
-<<<<<<< HEAD
-=======
           try {
             const existingSupplierRating = normalizeImportedRatingValue(qp.supplier_rating);
             const existingReviewCount = normalizeImportedReviewCount(qp.review_count);
@@ -721,7 +741,6 @@ export async function POST(req: NextRequest) {
             }
           } catch {}
 
->>>>>>> 2804edd (Align queue/import ratings to engine + add queue backfill)
           await admin
             .from('product_queue')
             .update({
@@ -864,14 +883,11 @@ export async function POST(req: NextRequest) {
         };
         const ratingOut = computeRating(signals);
 
-<<<<<<< HEAD
-=======
         const queueSupplierRating = normalizeImportedRatingValue(qp.supplier_rating);
         const queueReviewCount = normalizeImportedReviewCount(qp.review_count);
         const engineDisplayedRating = normalizeImportedRatingValue(ratingOut.displayedRating);
         const engineRatingConfidence = normalizeImportedRatingConfidence(ratingOut.ratingConfidence);
 
->>>>>>> 2804edd (Align queue/import ratings to engine + add queue backfill)
         const productPayload: Record<string, any> = {
           title: qp.name_en,
           slug: baseSlug,
@@ -932,19 +948,10 @@ export async function POST(req: NextRequest) {
           specifications: rawSpecifications,
           selling_points: rawSellingPoints,
           cj_category_id: qp.cj_category_id || null,
-<<<<<<< HEAD
-          displayed_rating: typeof qp.displayed_rating === 'number'
-            ? normalizeDisplayedRating(qp.displayed_rating)
-            : ratingOut.displayedRating,
-          rating_confidence: typeof qp.rating_confidence === 'number'
-            ? Math.max(0.05, Math.min(1, Number(qp.rating_confidence)))
-            : ratingOut.ratingConfidence,
-=======
           supplier_rating: queueSupplierRating,
           review_count: queueReviewCount,
           displayed_rating: engineDisplayedRating,
           rating_confidence: engineRatingConfidence,
->>>>>>> 2804edd (Align queue/import ratings to engine + add queue backfill)
           inventory_status: qp.inventory_status ?? null,
           inventory_error_message: qp.inventory_error_message ?? null,
           available_models: qp.available_models ?? null,
@@ -958,7 +965,7 @@ export async function POST(req: NextRequest) {
           'pack_height', 'material', 'product_type', 'origin_country', 'origin_country_code', 'hs_code',
           'size_chart_images', 'available_sizes', 'available_colors', 'has_variants',
           'min_price', 'max_price', 'specifications', 'selling_points',
-          'cj_category_id', 'displayed_rating', 'rating_confidence', 'overview', 'product_info', 'size_info',
+          'cj_category_id', 'supplier_rating', 'review_count', 'displayed_rating', 'rating_confidence', 'overview', 'product_info', 'size_info',
           'product_note', 'packing_list', 'store_sku', 'inventory_status', 'inventory_error_message',
           'available_models', 'product_type', 'color_image_map'
         ]);

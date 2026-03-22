@@ -188,6 +188,7 @@ export async function addProductToQueue(batchId: number, product: {
   variants: any[];
   avgPrice: number;
   supplierRating?: number;
+  reviewCount?: number;
   totalSales?: number;
   totalStock: number;
   processingDays?: number;
@@ -306,22 +307,13 @@ export async function addProductToQueue(batchId: number, product: {
     orderVolume: 0,
   };
   const ratingOut = computeRating(ratingSignals);
-<<<<<<< HEAD
-  const providedDisplayed = typeof product.displayedRating === 'number' ? normalizeDisplayedRating(product.displayedRating) : undefined;
-  const providedConfidence = typeof product.ratingConfidence === 'number' && Number.isFinite(product.ratingConfidence)
-    ? Math.max(0.05, Math.min(1, product.ratingConfidence))
-    : undefined;
-=======
-  const resolvedSupplierRating = normalizeQueueRatingValue(product.supplierRating);
-  const reviewCountRaw = Number(product.reviewCount);
-  const resolvedReviewCount = Number.isFinite(reviewCountRaw) && reviewCountRaw >= 0
-    ? Math.floor(reviewCountRaw)
+  const resolvedSupplierRating = Number.isFinite(Number(product.supplierRating))
+    ? Math.max(0, Math.min(5, Number(product.supplierRating)))
     : null;
-  const resolvedDisplayedRating = normalizeQueueRatingValue(ratingOut.displayedRating);
+  const resolvedDisplayedRating = normalizeDisplayedRating(ratingOut.displayedRating);
   const resolvedRatingConfidence = typeof ratingOut.ratingConfidence === 'number' && Number.isFinite(ratingOut.ratingConfidence) && ratingOut.ratingConfidence > 0
     ? Math.max(0.05, Math.min(1, ratingOut.ratingConfidence))
     : null;
->>>>>>> 2804edd (Align queue/import ratings to engine + add queue backfill)
 
   // Core fields that always exist
   const productData: Record<string, any> = {
@@ -345,15 +337,15 @@ export async function addProductToQueue(batchId: number, product: {
     shipping_cost_usd: resolvedMaxShippingUsd,
     calculated_retail_sar: null,
     margin_applied: FIXED_PROFIT_MARGIN_PERCENT,
-    supplier_rating: product.supplierRating ?? null,
+    supplier_rating: resolvedSupplierRating,
     total_sales: product.totalSales ?? null,
     stock_total: product.totalStock,
     processing_days: product.processingDays ?? null,
     delivery_days_min: product.deliveryDaysMin ?? null,
     delivery_days_max: product.deliveryDaysMax ?? null,
     quality_score: product.qualityScore ?? null,
-    displayed_rating: providedDisplayed ?? ratingOut.displayedRating,
-    rating_confidence: providedConfidence ?? ratingOut.ratingConfidence,
+    displayed_rating: resolvedDisplayedRating,
+    rating_confidence: resolvedRatingConfidence,
     status: 'pending',
     admin_notes: null,
     reviewed_by: null,

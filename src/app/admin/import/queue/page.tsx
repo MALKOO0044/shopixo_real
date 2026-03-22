@@ -39,6 +39,7 @@ type QueueProduct = {
   profit_margin?: number | null;
   displayed_rating?: number | null;
   rating_confidence?: number | null;
+  review_count?: number | null;
   stock_total: number;
   quality_score: number;
   status: string;
@@ -135,8 +136,6 @@ function getQueueVideoUrl(product: QueueProduct): string | null {
   return fallback || null;
 }
 
-<<<<<<< HEAD
-=======
 function resolveQueueDisplayedRating(product: QueueProduct): number {
   const displayedRatingRaw = Number(product.displayed_rating);
   if (Number.isFinite(displayedRatingRaw) && displayedRatingRaw > 0) {
@@ -156,7 +155,6 @@ function resolveQueueReviewCount(product: QueueProduct): number {
   return normalizeQueueReviewCount(product.review_count);
 }
 
->>>>>>> 2804edd (Align queue/import ratings to engine + add queue backfill)
 type Stats = {
   pending: number;
   approved: number;

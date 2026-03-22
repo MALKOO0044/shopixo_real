@@ -187,17 +187,12 @@ export async function POST(req: NextRequest) {
         mediaMode: typeof mediaMode === 'string' ? mediaMode : undefined,
         variants: p.variants || [],
         avgPrice,
-<<<<<<< HEAD
-        displayedRating: typeof p.displayedRating === 'number' ? p.displayedRating : undefined,
-        ratingConfidence: typeof p.ratingConfidence === 'number' ? p.ratingConfidence : undefined,
-=======
         supplierRating: Number.isFinite(Number(p.supplierRating ?? p.rating))
           ? Number(p.supplierRating ?? p.rating)
           : undefined,
         reviewCount: Number.isFinite(Number(p.reviewCount))
           ? Math.max(0, Math.floor(Number(p.reviewCount)))
           : undefined,
->>>>>>> 2804edd (Align queue/import ratings to engine + add queue backfill)
         totalStock,
         processingDays: p.processingDays ?? undefined,
         deliveryDaysMin: p.deliveryDaysMin ?? undefined,
