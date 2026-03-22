@@ -368,7 +368,7 @@ function buildQueueFallbackProduct(row: Record<string, any>, pid: string): Price
 export default function CjProductAdminPage({ params }: { params: { pid: string } }) {
   const searchParams = useSearchParams()
   const pid = decodeURIComponent(params.pid)
-  const queueId = (searchParams.get('queueId') || '').trim()
+  const queueId = (searchParams?.get('queueId') || '').trim()
   const [loading, setLoading] = useState(true)
   const [product, setProduct] = useState<PricedProduct | null>(null)
   const [err, setErr] = useState<string | null>(null)
