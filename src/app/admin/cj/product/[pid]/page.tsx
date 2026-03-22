@@ -124,33 +124,122 @@ function normalizeInventoryStatus(value: unknown): 'ok' | 'error' | 'partial' | 
   return undefined
 }
 
+function normalizeVariantKey(value: unknown): string {
+  return String(value ?? '').trim().toLowerCase().replace(/[\s\-_.]/g, '')
+}
+
+function collectVariantLookupKeys(variant: Record<string, any>): string[] {
+  const keys = [
+    normalizeVariantKey(variant?.variantId),
+    normalizeVariantKey(variant?.vid),
+    normalizeVariantKey(variant?.variantSku),
+    normalizeVariantKey(variant?.sku),
+    normalizeVariantKey(variant?.cjSku),
+  ].filter(Boolean)
+
+  return Array.from(new Set(keys))
+}
+
+function toOptionalTrimmedString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
 function buildQueueFallbackProduct(row: Record<string, any>, pid: string): PricedProduct {
   const images = parseStringArray(row.images)
-  const variantPricing = parseArray(row.variant_pricing)
-  const fallbackVariants = parseArray(row.variants)
-  const sourceVariants = variantPricing.length > 0 ? variantPricing : fallbackVariants
+  const queueVariants = parseArray(row.variants).filter((entry) => entry && typeof entry === 'object') as Record<string, any>[]
+  const variantPricing = parseArray(row.variant_pricing).filter((entry) => entry && typeof entry === 'object') as Record<string, any>[]
+
+  const variantPricingIndex = new Map<string, Record<string, any>>()
+  for (const pricingRow of variantPricing) {
+    for (const key of collectVariantLookupKeys(pricingRow)) {
+      if (!variantPricingIndex.has(key)) {
+        variantPricingIndex.set(key, pricingRow)
+      }
+    }
+  }
+
+  const sourceVariants = queueVariants.length > 0 ? queueVariants : variantPricing
 
   const processingDays = toFiniteNumber(row.processing_days, 0)
   const deliveryMin = toFiniteNumber(row.delivery_days_min, 0)
   const deliveryMax = toFiniteNumber(row.delivery_days_max, 0)
-  const deliveryLabel = deliveryMin > 0 && deliveryMax > 0
+  const fallbackDeliveryLabel = deliveryMin > 0 && deliveryMax > 0
     ? `${deliveryMin}-${deliveryMax} days`
     : deliveryMax > 0
       ? `${deliveryMax} days`
       : 'Unknown'
 
-  const mappedVariants = sourceVariants.map((variant, index) => {
+  const mappedVariants = sourceVariants.map((variant) => {
+    const variantKeys = collectVariantLookupKeys(variant)
+    const pricingRow = variantKeys
+      .map((key) => variantPricingIndex.get(key))
+      .find((entry): entry is Record<string, any> => Boolean(entry))
+      ?? (queueVariants.length === 0 ? variant : null)
+
+    const variantId = String(
+      variant?.variantId
+      ?? variant?.vid
+      ?? pricingRow?.variantId
+      ?? pricingRow?.vid
+      ?? variant?.variantSku
+      ?? variant?.sku
+      ?? ''
+    ).trim()
+    const variantSku = String(
+      variant?.variantSku
+      ?? variant?.sku
+      ?? variant?.cjSku
+      ?? pricingRow?.sku
+      ?? pricingRow?.variantSku
+      ?? pricingRow?.cjSku
+      ?? ''
+    ).trim()
+
+    if (!variantId && !variantSku) {
+      return null
+    }
+
     const variantPriceUSD = toFiniteNumber(
-      variant?.costPrice ?? variant?.variantPriceUSD ?? variant?.variantPriceUsd ?? variant?.variantPrice,
+      variant?.variantPriceUSD
+      ?? variant?.variantPriceUsd
+      ?? variant?.variantPrice
+      ?? variant?.costPrice
+      ?? pricingRow?.costPrice
+      ?? pricingRow?.variantPriceUSD
+      ?? pricingRow?.variantPrice,
       0
     )
     const shippingPriceUSD = toFiniteNumber(
-      variant?.shippingCost ?? variant?.shippingPriceUSD ?? variant?.shipping_price_usd ?? row.cj_shipping_cost,
+      variant?.shippingPriceUSD
+      ?? variant?.shipping_price_usd
+      ?? variant?.shippingCost
+      ?? pricingRow?.shippingPriceUSD
+      ?? pricingRow?.shipping_price_usd
+      ?? pricingRow?.shippingCost
+      ?? row.cj_shipping_cost,
       0
     )
 
-    const explicitSellSar = toFiniteNumber(variant?.price ?? variant?.sellPriceSAR ?? variant?.sellPriceSar, 0)
-    const explicitSellUsd = toFiniteNumber(variant?.priceUsd ?? variant?.sellPriceUSD ?? variant?.sellPriceUsd, 0)
+    const explicitSellSar = toFiniteNumber(
+      variant?.sellPriceSAR
+      ?? variant?.sellPriceSar
+      ?? variant?.price
+      ?? pricingRow?.sellPriceSAR
+      ?? pricingRow?.sellPriceSar
+      ?? pricingRow?.price,
+      0
+    )
+    const explicitSellUsd = toFiniteNumber(
+      variant?.sellPriceUSD
+      ?? variant?.sellPriceUsd
+      ?? variant?.priceUsd
+      ?? pricingRow?.sellPriceUSD
+      ?? pricingRow?.sellPriceUsd
+      ?? pricingRow?.priceUsd,
+      0
+    )
 
     const sellPriceUSD = explicitSellUsd > 0
       ? explicitSellUsd
@@ -174,19 +263,34 @@ function buildQueueFallbackProduct(row: Record<string, any>, pid: string): Price
     )
     const marginPercent = marginCandidate > 0 ? marginCandidate : undefined
 
-    const stock = toFiniteNumber(variant?.stock ?? variant?.stockQty ?? variant?.quantity, 0)
-    const cjStock = toFiniteNumber(variant?.cjStock, stock)
-    const factoryStock = toFiniteNumber(variant?.factoryStock, 0)
+    const stock = toFiniteNumber(variant?.stock ?? variant?.stockQty ?? variant?.quantity ?? pricingRow?.stock, 0)
+    const cjStock = toFiniteNumber(variant?.cjStock ?? pricingRow?.cjStock, stock)
+    const factoryStock = toFiniteNumber(variant?.factoryStock ?? pricingRow?.factoryStock, 0)
+    const shippingAvailable = typeof variant?.shippingAvailable === 'boolean'
+      ? variant.shippingAvailable
+      : typeof pricingRow?.shippingAvailable === 'boolean'
+        ? pricingRow.shippingAvailable
+        : true
+
+    const deliveryDays = toOptionalTrimmedString(variant?.deliveryDays)
+      ?? toOptionalTrimmedString(pricingRow?.deliveryDays)
+      ?? fallbackDeliveryLabel
+
+    const allShippingOptions = Array.isArray(variant?.allShippingOptions)
+      ? variant.allShippingOptions
+      : Array.isArray(pricingRow?.allShippingOptions)
+        ? pricingRow.allShippingOptions
+        : []
 
     return {
-      variantId: String(variant?.variantId ?? variant?.vid ?? index + 1),
-      variantSku: String(variant?.sku ?? variant?.variantSku ?? variant?.cjSku ?? `VAR-${index + 1}`),
+      variantId: variantId || variantSku,
+      variantSku: variantSku || variantId,
       variantPriceUSD,
-      shippingAvailable: true,
+      shippingAvailable,
       shippingPriceUSD,
       shippingPriceSAR: usdToSar(shippingPriceUSD),
-      deliveryDays: deliveryLabel,
-      logisticName: typeof variant?.logisticName === 'string' ? variant.logisticName : undefined,
+      deliveryDays,
+      logisticName: toOptionalTrimmedString(variant?.logisticName) ?? toOptionalTrimmedString(pricingRow?.logisticName),
       sellPriceSAR,
       sellPriceUSD: sellPriceUSD > 0 ? sellPriceUSD : undefined,
       totalCostSAR,
@@ -197,17 +301,18 @@ function buildQueueFallbackProduct(row: Record<string, any>, pid: string): Price
       stock,
       cjStock,
       factoryStock,
-      variantName: typeof variant?.variantName === 'string' ? variant.variantName : undefined,
-      variantImage: typeof variant?.colorImage === 'string'
-        ? variant.colorImage
-        : typeof variant?.variantImage === 'string'
-          ? variant.variantImage
-          : undefined,
-      size: typeof variant?.size === 'string' ? variant.size : undefined,
-      color: typeof variant?.color === 'string' ? variant.color : undefined,
-      allShippingOptions: [],
+      variantName: toOptionalTrimmedString(variant?.variantName)
+        ?? toOptionalTrimmedString(variant?.variantKey)
+        ?? toOptionalTrimmedString(pricingRow?.variantName),
+      variantImage: toOptionalTrimmedString(variant?.variantImage)
+        ?? toOptionalTrimmedString(variant?.colorImage)
+        ?? toOptionalTrimmedString(pricingRow?.colorImage)
+        ?? toOptionalTrimmedString(pricingRow?.variantImage),
+      size: toOptionalTrimmedString(variant?.size) ?? toOptionalTrimmedString(pricingRow?.size),
+      color: toOptionalTrimmedString(variant?.color) ?? toOptionalTrimmedString(pricingRow?.color),
+      allShippingOptions,
     }
-  })
+  }).filter((variant): variant is any => variant !== null)
 
   const sellUsdCandidates = mappedVariants
     .map((variant) => Number((variant as any).sellPriceUSD))
@@ -217,11 +322,18 @@ function buildQueueFallbackProduct(row: Record<string, any>, pid: string): Price
     .filter((value) => Number.isFinite(value) && value > 0)
 
   const directRetailSar = toFiniteNumber(row.calculated_retail_sar, 0)
+  const directRetailUsd = toFiniteNumber(row.calculated_retail_usd, 0)
   if (sellSarCandidates.length === 0 && directRetailSar > 0) {
     sellSarCandidates.push(directRetailSar)
   }
   if (sellUsdCandidates.length === 0 && directRetailSar > 0) {
     sellUsdCandidates.push(sarToUsd(directRetailSar))
+  }
+  if (sellUsdCandidates.length === 0 && directRetailUsd > 0) {
+    sellUsdCandidates.push(directRetailUsd)
+  }
+  if (sellSarCandidates.length === 0 && directRetailUsd > 0) {
+    sellSarCandidates.push(usdToSar(directRetailUsd))
   }
 
   const minPriceUSD = sellUsdCandidates.length > 0 ? Math.min(...sellUsdCandidates) : 0
@@ -247,8 +359,25 @@ function buildQueueFallbackProduct(row: Record<string, any>, pid: string): Price
     }
   }
 
-  const availableColors = parseStringArray(row.available_colors)
-  const availableSizes = parseStringArray(row.available_sizes)
+  const derivedColors = Array.from(
+    new Set(
+      mappedVariants
+        .map((variant) => toOptionalTrimmedString((variant as any).color))
+        .filter((value): value is string => Boolean(value))
+    )
+  )
+  const derivedSizes = Array.from(
+    new Set(
+      mappedVariants
+        .map((variant) => toOptionalTrimmedString((variant as any).size))
+        .filter((value): value is string => Boolean(value))
+    )
+  )
+
+  const availableColorsFromQueue = parseStringArray(row.available_colors)
+  const availableSizesFromQueue = parseStringArray(row.available_sizes)
+  const availableColors = availableColorsFromQueue.length > 0 ? availableColorsFromQueue : derivedColors
+  const availableSizes = availableSizesFromQueue.length > 0 ? availableSizesFromQueue : derivedSizes
   const availableModels = parseStringArray(row.available_models)
   const sizeChartImages = parseStringArray(row.size_chart_images)
 
@@ -308,7 +437,7 @@ function buildQueueFallbackProduct(row: Record<string, any>, pid: string): Price
     minPriceUSD: minPriceUSD > 0 ? minPriceUSD : undefined,
     maxPriceUSD: maxPriceUSD > 0 ? maxPriceUSD : undefined,
     avgPriceUSD: avgPriceUSD > 0 ? avgPriceUSD : undefined,
-    profitMarginApplied: toPositiveNumberOrUndefined(row.profit_margin) ?? 42,
+    profitMarginApplied: toPositiveNumberOrUndefined(row.profit_margin),
     stock,
     listedNum: toFiniteNumber(row.total_sales, 0),
     totalVerifiedInventory: inventory?.totalCJ,
@@ -319,7 +448,7 @@ function buildQueueFallbackProduct(row: Record<string, any>, pid: string): Price
     variants: mappedVariants,
     inventoryVariants,
     successfulVariants: mappedVariants.length,
-    totalVariants: mappedVariants.length,
+    totalVariants: queueVariants.length > 0 ? queueVariants.length : mappedVariants.length,
     description: typeof row.description_en === 'string' ? row.description_en : undefined,
     overview: typeof row.overview === 'string' ? row.overview : undefined,
     productInfo: typeof row.product_info === 'string' ? row.product_info : undefined,
@@ -369,6 +498,7 @@ export default function CjProductAdminPage({ params }: { params: { pid: string }
   const searchParams = useSearchParams()
   const pid = decodeURIComponent(params.pid)
   const queueId = (searchParams?.get('queueId') || '').trim()
+  const isQueueSnapshot = queueId.length > 0
   const [loading, setLoading] = useState(true)
   const [product, setProduct] = useState<PricedProduct | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -404,6 +534,23 @@ export default function CjProductAdminPage({ params }: { params: { pid: string }
       setLoading(true)
       setErr(null)
       setSourceNotice(null)
+
+      if (isQueueSnapshot) {
+        const queueSnapshot = await loadQueueFallbackProduct().catch(() => null)
+        if (!mounted) return
+
+        if (queueSnapshot) {
+          setProduct(queueSnapshot)
+          setErr(null)
+          setSourceNotice('Loaded from the exact queue snapshot saved when this product was added to the checklist.')
+        } else {
+          setProduct(null)
+          setErr('Queue snapshot not found for this product.')
+        }
+        setLoading(false)
+        return
+      }
+
       try {
         const res = await fetch(`/api/admin/cj/products/${encodeURIComponent(pid)}/details`, { cache: 'no-store' })
         const j = await res.json().catch(() => ({}))
@@ -443,7 +590,7 @@ export default function CjProductAdminPage({ params }: { params: { pid: string }
     }
     load()
     return () => { mounted = false }
-  }, [pid, queueId])
+  }, [pid, queueId, isQueueSnapshot])
 
   async function forceResync() {
     setSyncing(true)
@@ -647,22 +794,26 @@ export default function CjProductAdminPage({ params }: { params: { pid: string }
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                onClick={forceResync}
-                disabled={syncing}
-                className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition-colors"
-              >
-                <RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
-                {syncing ? 'Syncing...' : 'Re-sync'}
-              </button>
-              <button
-                onClick={addToQueue}
-                disabled={addingToQueue}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
-              >
-                <Plus className="h-4 w-4" />
-                {addingToQueue ? 'Adding...' : 'Add to Queue'}
-              </button>
+              {!isQueueSnapshot && (
+                <>
+                  <button
+                    onClick={forceResync}
+                    disabled={syncing}
+                    className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                  >
+                    <RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
+                    {syncing ? 'Syncing...' : 'Re-sync'}
+                  </button>
+                  <button
+                    onClick={addToQueue}
+                    disabled={addingToQueue}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                  >
+                    <Plus className="h-4 w-4" />
+                    {addingToQueue ? 'Adding...' : 'Add to Queue'}
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>
