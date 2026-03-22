@@ -498,7 +498,6 @@ export default function CjProductAdminPage({ params }: { params: { pid: string }
   const searchParams = useSearchParams()
   const pid = decodeURIComponent(params.pid)
   const queueId = (searchParams?.get('queueId') || '').trim()
-  const isQueueSnapshot = queueId.length > 0
   const [loading, setLoading] = useState(true)
   const [product, setProduct] = useState<PricedProduct | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -534,22 +533,6 @@ export default function CjProductAdminPage({ params }: { params: { pid: string }
       setLoading(true)
       setErr(null)
       setSourceNotice(null)
-
-      if (isQueueSnapshot) {
-        const queueSnapshot = await loadQueueFallbackProduct().catch(() => null)
-        if (!mounted) return
-
-        if (queueSnapshot) {
-          setProduct(queueSnapshot)
-          setErr(null)
-          setSourceNotice('Loaded from the exact queue snapshot saved when this product was added to the checklist.')
-        } else {
-          setProduct(null)
-          setErr('Queue snapshot not found for this product.')
-        }
-        setLoading(false)
-        return
-      }
 
       try {
         const res = await fetch(`/api/admin/cj/products/${encodeURIComponent(pid)}/details`, { cache: 'no-store' })
@@ -590,7 +573,7 @@ export default function CjProductAdminPage({ params }: { params: { pid: string }
     }
     load()
     return () => { mounted = false }
-  }, [pid, queueId, isQueueSnapshot])
+  }, [pid, queueId])
 
   async function forceResync() {
     setSyncing(true)
@@ -794,7 +777,7 @@ export default function CjProductAdminPage({ params }: { params: { pid: string }
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {!isQueueSnapshot && (
+              {!sourceNotice && (
                 <>
                   <button
                     onClick={forceResync}
