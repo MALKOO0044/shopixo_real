@@ -95,6 +95,11 @@ function toFiniteNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback
 }
 
+function toFiniteNumberOrUndefined(value: unknown): number | undefined {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : undefined
+}
+
 function toPositiveNumberOrUndefined(value: unknown): number | undefined {
   const n = Number(value)
   return Number.isFinite(n) && n > 0 ? n : undefined
@@ -211,16 +216,25 @@ function buildQueueFallbackProduct(row: Record<string, any>, pid: string): Price
       ?? pricingRow?.variantPrice,
       0
     )
-    const shippingPriceUSD = toFiniteNumber(
+    const allShippingOptions = Array.isArray(variant?.allShippingOptions)
+      ? variant.allShippingOptions
+      : Array.isArray(pricingRow?.allShippingOptions)
+        ? pricingRow.allShippingOptions
+        : []
+
+    const explicitShippingPriceUSD = toFiniteNumberOrUndefined(
       variant?.shippingPriceUSD
       ?? variant?.shipping_price_usd
       ?? variant?.shippingCost
       ?? pricingRow?.shippingPriceUSD
       ?? pricingRow?.shipping_price_usd
       ?? pricingRow?.shippingCost
-      ?? row.cj_shipping_cost,
-      0
     )
+    const rowShippingFallbackUSD = sourceVariants.length === 1
+      ? toFiniteNumberOrUndefined(row.cj_shipping_cost)
+      : undefined
+    const hasKnownShippingValue = explicitShippingPriceUSD !== undefined || rowShippingFallbackUSD !== undefined
+    const shippingPriceUSD = Math.max(0, explicitShippingPriceUSD ?? rowShippingFallbackUSD ?? 0)
 
     const explicitSellSar = toFiniteNumber(
       variant?.sellPriceSAR
@@ -264,23 +278,20 @@ function buildQueueFallbackProduct(row: Record<string, any>, pid: string): Price
     const marginPercent = marginCandidate > 0 ? marginCandidate : undefined
 
     const stock = toFiniteNumber(variant?.stock ?? variant?.stockQty ?? variant?.quantity ?? pricingRow?.stock, 0)
-    const cjStock = toFiniteNumber(variant?.cjStock ?? pricingRow?.cjStock, stock)
+    const cjStock = toFiniteNumber(variant?.cjStock ?? pricingRow?.cjStock, 0)
     const factoryStock = toFiniteNumber(variant?.factoryStock ?? pricingRow?.factoryStock, 0)
-    const shippingAvailable = typeof variant?.shippingAvailable === 'boolean'
+    const explicitShippingAvailable = typeof variant?.shippingAvailable === 'boolean'
       ? variant.shippingAvailable
       : typeof pricingRow?.shippingAvailable === 'boolean'
         ? pricingRow.shippingAvailable
-        : true
+        : undefined
+    const shippingAvailable = typeof explicitShippingAvailable === 'boolean'
+      ? explicitShippingAvailable
+      : (hasKnownShippingValue || allShippingOptions.length > 0)
 
     const deliveryDays = toOptionalTrimmedString(variant?.deliveryDays)
       ?? toOptionalTrimmedString(pricingRow?.deliveryDays)
       ?? fallbackDeliveryLabel
-
-    const allShippingOptions = Array.isArray(variant?.allShippingOptions)
-      ? variant.allShippingOptions
-      : Array.isArray(pricingRow?.allShippingOptions)
-        ? pricingRow.allShippingOptions
-        : []
 
     return {
       variantId: variantId || variantSku,
@@ -383,19 +394,24 @@ function buildQueueFallbackProduct(row: Record<string, any>, pid: string): Price
 
   const parsedInventory = parseObject(row.inventory_by_warehouse)
   const parsedWarehouses = parseArray(parsedInventory.warehouses)
-  const inventory = parsedWarehouses.length > 0 || Number.isFinite(Number(parsedInventory.totalAvailable))
+  const normalizedWarehouses = parsedWarehouses.map((entry: any, index: number) => ({
+    areaId: toFiniteNumber(entry?.areaId, index + 1),
+    areaName: String(entry?.areaName ?? entry?.warehouseName ?? 'Warehouse').trim() || 'Warehouse',
+    countryCode: String(entry?.countryCode ?? '').trim(),
+    totalInventory: toFiniteNumber(entry?.totalInventory, 0),
+    cjInventory: toFiniteNumber(entry?.cjInventory, 0),
+    factoryInventory: toFiniteNumber(entry?.factoryInventory, 0),
+  }))
+  const warehousesTotalInventory = normalizedWarehouses.reduce((sum, warehouse) => sum + warehouse.totalInventory, 0)
+  const inventory = normalizedWarehouses.length > 0 || Number.isFinite(Number(parsedInventory.totalAvailable))
     ? {
         totalCJ: toFiniteNumber(parsedInventory.totalCJ, 0),
         totalFactory: toFiniteNumber(parsedInventory.totalFactory, 0),
-        totalAvailable: toFiniteNumber(parsedInventory.totalAvailable, stock),
-        warehouses: parsedWarehouses.map((entry: any, index: number) => ({
-          areaId: toFiniteNumber(entry?.areaId, index + 1),
-          areaName: String(entry?.areaName ?? entry?.warehouseName ?? 'Warehouse').trim() || 'Warehouse',
-          countryCode: String(entry?.countryCode ?? '').trim(),
-          totalInventory: toFiniteNumber(entry?.totalInventory, 0),
-          cjInventory: toFiniteNumber(entry?.cjInventory, 0),
-          factoryInventory: toFiniteNumber(entry?.factoryInventory, 0),
-        })),
+        totalAvailable: toFiniteNumber(
+          parsedInventory.totalAvailable,
+          warehousesTotalInventory > 0 ? warehousesTotalInventory : stock
+        ),
+        warehouses: normalizedWarehouses,
       }
     : undefined
 
@@ -539,34 +555,30 @@ export default function CjProductAdminPage({ params }: { params: { pid: string }
         const j = await res.json().catch(() => ({}))
         if (!mounted) return
         if (!res.ok || !j.ok) {
-          const queueFallback = await loadQueueFallbackProduct().catch(() => null)
-          if (!mounted) return
+          const errorType = typeof j?.errorType === 'string' ? j.errorType : ''
+          const canFallbackToQueue = Boolean(j?.canFallbackToQueue) || errorType === 'not_found'
+          if (canFallbackToQueue) {
+            const queueFallback = await loadQueueFallbackProduct().catch(() => null)
+            if (!mounted) return
 
-          if (queueFallback) {
-            setProduct(queueFallback)
-            setErr(null)
-            setSourceNotice('Loaded queue snapshot because this product is no longer available in CJ API.')
-          } else {
-            setProduct(null)
-            setErr(j?.error || 'Failed to load product details')
+            if (queueFallback) {
+              setProduct(queueFallback)
+              setErr(null)
+              setSourceNotice('Loaded queue snapshot because this product was not found in live CJ API.')
+              return
+            }
           }
+
+          setProduct(null)
+          setErr(j?.error || 'Failed to load product details')
         } else {
           setProduct(j.product)
           setErr(null)
         }
       } catch (e: any) {
         if (!mounted) return
-        const queueFallback = await loadQueueFallbackProduct().catch(() => null)
-        if (!mounted) return
-
-        if (queueFallback) {
-          setProduct(queueFallback)
-          setErr(null)
-          setSourceNotice('Loaded queue snapshot because this product is no longer available in CJ API.')
-        } else {
-          setProduct(null)
-          setErr(e?.message || String(e))
-        }
+        setProduct(null)
+        setErr(e?.message || String(e))
       } finally {
         if (mounted) setLoading(false)
       }
@@ -665,6 +677,7 @@ export default function CjProductAdminPage({ params }: { params: { pid: string }
             variants: product.variants,
             variantPricing,
             stock: product.stock,
+            totalSales: product.listedNum,
             displayedRating: typeof product.displayedRating === 'number' ? product.displayedRating : undefined,
             ratingConfidence: typeof product.ratingConfidence === 'number' ? product.ratingConfidence : undefined,
             availableColors: product.availableColors || [],

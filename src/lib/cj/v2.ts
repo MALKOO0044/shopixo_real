@@ -1437,16 +1437,64 @@ function mergeListV2Fields(productData: any, match: any, source: string): void {
   }
 }
 
+export type FetchProductDetailsErrorType = 'invalid_input' | 'not_found' | 'auth_error' | 'timeout' | 'upstream_error';
+
+export type FetchProductDetailsByPidResult =
+  | { ok: true; data: any }
+  | { ok: false; errorType: FetchProductDetailsErrorType; errorMessage: string; statusCode?: number };
+
+function classifyProductDetailsFetchError(error: unknown): {
+  errorType: FetchProductDetailsErrorType;
+  errorMessage: string;
+  statusCode?: number;
+} {
+  const err = error as any;
+  const errorMessage = String(err?.message || error || 'Unknown CJ API error');
+  const statusMatch = errorMessage.match(/HTTP\s*(\d{3})/i);
+  const statusCode = statusMatch ? Number(statusMatch[1]) : undefined;
+
+  if (statusCode === 404) {
+    return { errorType: 'not_found', errorMessage, statusCode };
+  }
+  if (statusCode === 401 || statusCode === 403) {
+    return { errorType: 'auth_error', errorMessage, statusCode };
+  }
+  if (statusCode === 408 || statusCode === 504) {
+    return { errorType: 'timeout', errorMessage, statusCode };
+  }
+  if (err?.name === 'AbortError' || /timeout|timed out|aborted/i.test(errorMessage)) {
+    return { errorType: 'timeout', errorMessage, statusCode };
+  }
+  if (/network|econnreset|enotfound|econnrefused/i.test(errorMessage)) {
+    return { errorType: 'upstream_error', errorMessage, statusCode };
+  }
+
+  return { errorType: 'upstream_error', errorMessage, statusCode };
+}
+
 // Fetch full product details by PID - returns complete product with all images and variants
-export async function fetchProductDetailsByPid(pid: string): Promise<any | null> {
-  if (!pid) return null;
+export async function fetchProductDetailsByPidWithStatus(pid: string): Promise<FetchProductDetailsByPidResult> {
+  if (!pid) {
+    return {
+      ok: false,
+      errorType: 'invalid_input',
+      errorMessage: 'Product ID is required',
+    };
+  }
   
   try {
     // Fetch product details from /product/query
     const pr = await cjFetch<any>(`/product/query?pid=${encodeURIComponent(pid)}`);
     let productData = pr?.data || pr?.content || pr || null;
     
-    if (!productData) return null;
+    if (!productData || typeof productData !== 'object') {
+      return {
+        ok: false,
+        errorType: 'not_found',
+        errorMessage: `Product ${pid} not found in CJ API`,
+        statusCode: 404,
+      };
+    }
     
     // Get the SKU for more targeted search
     const sku = productData.productSku || productData.sku || '';
@@ -1631,11 +1679,20 @@ export async function fetchProductDetailsByPid(pid: string): Promise<any | null>
       // Continue without variants if that endpoint fails
     }
     
-    return productData;
+    return { ok: true, data: productData };
   } catch (e: any) {
-    console.log(`[CJ Details] Failed to fetch details for ${pid}:`, e?.message);
-    return null;
+    const classified = classifyProductDetailsFetchError(e);
+    console.log(`[CJ Details] Failed to fetch details for ${pid} (${classified.errorType}):`, classified.errorMessage);
+    return {
+      ok: false,
+      ...classified,
+    };
   }
+}
+
+export async function fetchProductDetailsByPid(pid: string): Promise<any | null> {
+  const result = await fetchProductDetailsByPidWithStatus(pid);
+  return result.ok ? result.data : null;
 }
 
 // Batch fetch product details with concurrency control

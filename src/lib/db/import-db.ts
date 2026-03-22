@@ -294,6 +294,9 @@ export async function addProductToQueue(batchId: number, product: {
   const imgNorm = Math.max(0, Math.min(1, imagesCount / 15));
   const priceNorm = Math.max(0, Math.min(1, minVariantUsd / 50));
   const dynQuality = Math.max(0, Math.min(1, 0.6 * imgNorm + 0.4 * (1 - priceNorm)));
+  const normalizedTotalSales = Number.isFinite(Number(product.totalSales))
+    ? Math.max(0, Number(product.totalSales))
+    : null;
 
   const ratingSignals = {
     imageCount: imagesCount,
@@ -304,7 +307,7 @@ export async function addProductToQueue(batchId: number, product: {
       : dynQuality,
     priceUsd: minVariantUsd,
     sentiment: 0,
-    orderVolume: 0,
+    orderVolume: normalizedTotalSales ?? 0,
   };
   const ratingOut = computeRating(ratingSignals);
   const resolvedSupplierRating = Number.isFinite(Number(product.supplierRating))
@@ -338,7 +341,7 @@ export async function addProductToQueue(batchId: number, product: {
     calculated_retail_sar: null,
     margin_applied: FIXED_PROFIT_MARGIN_PERCENT,
     supplier_rating: resolvedSupplierRating,
-    total_sales: product.totalSales ?? null,
+    total_sales: normalizedTotalSales,
     stock_total: product.totalStock,
     processing_days: product.processingDays ?? null,
     delivery_days_min: product.deliveryDaysMin ?? null,

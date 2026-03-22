@@ -618,6 +618,7 @@ export default function ProductDiscoveryPage() {
               maxPriceUSD: (p as any).maxPriceUSD,
               avgPriceUSD: (p as any).avgPriceUSD,
               stock: p.stock,
+              totalSales: p.listedNum,
               variants: p.variants,
               categoryName: p.categoryName,
               cjCategoryId: category !== 'all' ? category : undefined,

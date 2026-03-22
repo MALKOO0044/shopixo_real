@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { ensureAdmin } from '@/lib/auth/admin-guard';
-import { getAccessToken, freightCalculate, fetchProductDetailsByPid, getInventoryByPid, queryVariantInventory, getProductVariants } from '@/lib/cj/v2';
+import { getAccessToken, freightCalculate, fetchProductDetailsByPidWithStatus, getInventoryByPid, queryVariantInventory, getProductVariants } from '@/lib/cj/v2';
 import type { PricedProduct, PricedVariant, InventoryVariant, ProductInventory } from '@/components/admin/import/preview/types';
 import { computeRating } from '@/lib/rating/engine';
 import { createClient } from '@supabase/supabase-js';
@@ -130,14 +130,39 @@ export async function GET(
       );
     }
 
-    // Fetch full product details
-    const fullDetails = await fetchProductDetailsByPid(pid);
-    if (!fullDetails) {
+    // Fetch full product details with explicit failure classification.
+    const fullDetailsResult = await fetchProductDetailsByPidWithStatus(pid);
+    if (!fullDetailsResult.ok) {
+      const statusCode = fullDetailsResult.errorType === 'not_found'
+        ? 404
+        : fullDetailsResult.errorType === 'invalid_input'
+          ? 400
+          : 502;
+
+      const fallbackEligible = fullDetailsResult.errorType === 'not_found';
+      const userFacingError = fullDetailsResult.errorType === 'not_found'
+        ? 'Product not found in CJ API'
+        : fullDetailsResult.errorType === 'auth_error'
+          ? 'Failed to authenticate with CJ API while loading product details'
+          : fullDetailsResult.errorType === 'timeout'
+            ? 'CJ API timed out while loading product details'
+            : fullDetailsResult.errorType === 'invalid_input'
+              ? fullDetailsResult.errorMessage
+              : 'CJ API temporarily unavailable while loading product details';
+
       return NextResponse.json(
-        { ok: false, error: 'Product not found in CJ API' },
-        { status: 404, headers: { 'Cache-Control': 'no-store' } }
+        {
+          ok: false,
+          error: userFacingError,
+          errorType: fullDetailsResult.errorType,
+          upstreamMessage: fullDetailsResult.errorMessage,
+          canFallbackToQueue: fallbackEligible,
+        },
+        { status: statusCode, headers: { 'Cache-Control': 'no-store' } }
       );
     }
+
+    const fullDetails = fullDetailsResult.data;
 
     const source = fullDetails;
     const name = String(source.productNameEn || source.name || source.productName || '');
@@ -854,7 +879,7 @@ export async function GET(
         qualityScore: dynQuality,
         priceUsd: minVariantUsd,
         sentiment: 0,
-        orderVolume: 0,
+        orderVolume: Number.isFinite(listedNum) && listedNum > 0 ? listedNum : 0,
       });
 
       displayedRating = ratingOut.displayedRating;

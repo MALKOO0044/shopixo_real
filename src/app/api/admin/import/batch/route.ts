@@ -127,6 +127,10 @@ export async function POST(req: NextRequest) {
         totalStock = p.variants.reduce((sum: number, v: any) => sum + (v.stock || v.variantQuantity || 0), 0);
       }
 
+      const totalSales = Number.isFinite(Number(p.totalSales ?? p.listedNum))
+        ? Math.max(0, Number(p.totalSales ?? p.listedNum))
+        : undefined;
+
       const productId = p.cjProductId || p.pid || p.productId;
       
       // Handle images - could be array or single image
@@ -193,6 +197,7 @@ export async function POST(req: NextRequest) {
         reviewCount: Number.isFinite(Number(p.reviewCount))
           ? Math.max(0, Math.floor(Number(p.reviewCount)))
           : undefined,
+        totalSales,
         totalStock,
         processingDays: p.processingDays ?? undefined,
         deliveryDaysMin: p.deliveryDaysMin ?? undefined,
