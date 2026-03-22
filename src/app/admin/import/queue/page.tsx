@@ -135,6 +135,28 @@ function getQueueVideoUrl(product: QueueProduct): string | null {
   return fallback || null;
 }
 
+<<<<<<< HEAD
+=======
+function resolveQueueDisplayedRating(product: QueueProduct): number {
+  const displayedRatingRaw = Number(product.displayed_rating);
+  if (Number.isFinite(displayedRatingRaw) && displayedRatingRaw > 0) {
+    return Math.min(5, Math.max(0, displayedRatingRaw));
+  }
+
+  return 0;
+}
+
+function normalizeQueueReviewCount(value: unknown): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return Math.max(0, Math.floor(numeric));
+}
+
+function resolveQueueReviewCount(product: QueueProduct): number {
+  return normalizeQueueReviewCount(product.review_count);
+}
+
+>>>>>>> 2804edd (Align queue/import ratings to engine + add queue backfill)
 type Stats = {
   pending: number;
   approved: number;

@@ -306,10 +306,22 @@ export async function addProductToQueue(batchId: number, product: {
     orderVolume: 0,
   };
   const ratingOut = computeRating(ratingSignals);
+<<<<<<< HEAD
   const providedDisplayed = typeof product.displayedRating === 'number' ? normalizeDisplayedRating(product.displayedRating) : undefined;
   const providedConfidence = typeof product.ratingConfidence === 'number' && Number.isFinite(product.ratingConfidence)
     ? Math.max(0.05, Math.min(1, product.ratingConfidence))
     : undefined;
+=======
+  const resolvedSupplierRating = normalizeQueueRatingValue(product.supplierRating);
+  const reviewCountRaw = Number(product.reviewCount);
+  const resolvedReviewCount = Number.isFinite(reviewCountRaw) && reviewCountRaw >= 0
+    ? Math.floor(reviewCountRaw)
+    : null;
+  const resolvedDisplayedRating = normalizeQueueRatingValue(ratingOut.displayedRating);
+  const resolvedRatingConfidence = typeof ratingOut.ratingConfidence === 'number' && Number.isFinite(ratingOut.ratingConfidence) && ratingOut.ratingConfidence > 0
+    ? Math.max(0.05, Math.min(1, ratingOut.ratingConfidence))
+    : null;
+>>>>>>> 2804edd (Align queue/import ratings to engine + add queue backfill)
 
   // Core fields that always exist
   const productData: Record<string, any> = {
