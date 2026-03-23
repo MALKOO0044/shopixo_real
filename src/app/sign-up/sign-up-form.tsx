@@ -1,7 +1,6 @@
 "use client";
 
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,7 +12,6 @@ export default function SignUpForm() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
-  const router = useRouter();
   const supabase = createClientComponentClient();
 
   const handleSignUp = async (e: React.FormEvent) => {
@@ -25,8 +23,14 @@ export default function SignUpForm() {
       return;
     }
 
-    // Always use hardcoded production URL to ensure correct redirect
-    const callbackUrl = "https://shopixo.net/auth/callback"
+    const envSiteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim() || "";
+    const browserOrigin = typeof window !== "undefined" ? window.location.origin : "";
+    const resolvedBase = (browserOrigin && /^https?:\/\//i.test(browserOrigin)
+      ? browserOrigin
+      : envSiteUrl && /^https?:\/\//i.test(envSiteUrl)
+        ? envSiteUrl
+        : "http://localhost:3000").replace(/\/$/, "");
+    const callbackUrl = `${resolvedBase}/auth/callback`;
 
     const { error } = await supabase.auth.signUp({
       email,

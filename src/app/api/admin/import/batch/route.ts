@@ -20,7 +20,7 @@ const FIXED_PROFIT_MARGIN_PERCENT = 42;
 export async function POST(req: NextRequest) {
   console.log('[Import Batch] POST request received');
   try {
-    const guard = await ensureAdmin();
+    const guard = await ensureAdmin(req);
     console.log('[Import Batch] Admin guard result:', guard.ok ? 'authenticated' : guard.reason);
     if (!guard.ok) {
       return NextResponse.json({ ok: false, error: guard.reason }, { status: 401 });

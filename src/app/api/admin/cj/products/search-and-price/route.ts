@@ -436,7 +436,7 @@ export async function GET(req: Request) {
 async function handleSearch(req: Request, isPost: boolean) {
   const log = loggerForRequest(req);
   try {
-    const guard = await ensureAdmin();
+    const guard = await ensureAdmin(req);
     if (!guard.ok) {
       const r = NextResponse.json(
         { ok: false, error: guard.reason }, 

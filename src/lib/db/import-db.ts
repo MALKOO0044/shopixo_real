@@ -6,6 +6,18 @@ import { normalizeCjVideoUrl } from '@/lib/cj/video';
 
 let supabaseAdmin: SupabaseClient | null = null;
 const FIXED_PROFIT_MARGIN_PERCENT = 42;
+const PRODUCT_QUEUE_SCHEMA_CACHE_TTL_MS = 30_000;
+
+type ProductQueueSchemaCheckResult = {
+  ready: boolean;
+  missingColumns: string[];
+  migrationSQL: string;
+};
+
+let productQueueSchemaCache: {
+  value: ProductQueueSchemaCheckResult;
+  expiresAt: number;
+} | null = null;
 
 function getSupabaseAdmin(): SupabaseClient | null {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -26,14 +38,23 @@ export function isImportDbConfigured(): boolean {
 
 // Check if all required columns exist in product_queue table
 // This covers ALL columns that addProductToQueue writes to
-export async function checkProductQueueSchema(): Promise<{
-  ready: boolean;
-  missingColumns: string[];
-  migrationSQL: string;
-}> {
+export async function checkProductQueueSchema(forceRefresh: boolean = false): Promise<ProductQueueSchemaCheckResult> {
+  if (!forceRefresh && productQueueSchemaCache && Date.now() < productQueueSchemaCache.expiresAt) {
+    return productQueueSchemaCache.value;
+  }
+
   const supabase = getSupabaseAdmin();
   if (!supabase) {
-    return { ready: false, missingColumns: ['(supabase not configured)'], migrationSQL: '' };
+    const out: ProductQueueSchemaCheckResult = {
+      ready: false,
+      missingColumns: ['(supabase not configured)'],
+      migrationSQL: '',
+    };
+    productQueueSchemaCache = {
+      value: out,
+      expiresAt: Date.now() + PRODUCT_QUEUE_SCHEMA_CACHE_TTL_MS,
+    };
+    return out;
   }
 
   // ALL extended columns that addProductToQueue requires
@@ -107,11 +128,18 @@ export async function checkProductQueueSchema(): Promise<{
         .join('\n')
     : '';
 
-  return {
+  const out: ProductQueueSchemaCheckResult = {
     ready: missingColumns.length === 0,
     missingColumns,
     migrationSQL
   };
+
+  productQueueSchemaCache = {
+    value: out,
+    expiresAt: Date.now() + PRODUCT_QUEUE_SCHEMA_CACHE_TTL_MS,
+  };
+
+  return out;
 }
 
 export async function testImportDbConnection(): Promise<{ ok: boolean; error?: string }> {

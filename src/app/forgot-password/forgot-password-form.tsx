@@ -17,8 +17,13 @@ export default function ForgotPasswordForm() {
     if (e) setEmail(e)
   }, [params])
 
-  // Always use hardcoded production URL to ensure correct redirect
-  const base = "https://shopixo.net"
+  const envSiteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim() || ""
+  const browserOrigin = typeof window !== "undefined" ? window.location.origin : ""
+  const base = (browserOrigin && /^https?:\/\//i.test(browserOrigin)
+    ? browserOrigin
+    : envSiteUrl && /^https?:\/\//i.test(envSiteUrl)
+      ? envSiteUrl
+      : "http://localhost:3000").replace(/\/$/, "")
   const nextParam = (params?.get("redirect") || params?.get("next") || "/").toString()
   const safeNext = nextParam.startsWith("/") && !nextParam.startsWith("//") ? nextParam : "/"
   const targetAfterCallback = safeNext && safeNext !== "/" ? `/reset-password?next=${encodeURIComponent(safeNext)}` : "/reset-password"

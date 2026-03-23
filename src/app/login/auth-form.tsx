@@ -22,17 +22,11 @@ export default function AuthForm() {
     return url.startsWith("https://") || url.startsWith("http://")
   }
   
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim() || ""
-  const windowOrigin = typeof window !== "undefined" ? window.location.origin : ""
-  // Always use the hardcoded production URL to avoid any runtime issues
-  const base = "https://shopixo.net"
+  const envSiteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim() || ""
+  const browserOrigin = typeof window !== "undefined" ? window.location.origin : ""
+  const base = (isValidUrl(browserOrigin) ? browserOrigin : isValidUrl(envSiteUrl) ? envSiteUrl : "http://localhost:3000").replace(/\/$/, "")
   const redirectTo = `${base}/auth/callback`
   const redirectWithNext = safeNext && safeNext !== "/" ? `${redirectTo}?next=${encodeURIComponent(safeNext)}` : redirectTo
-  
-  // Debug: log to console what URL will be used (remove after testing)
-  if (typeof window !== "undefined") {
-    console.log("[Auth Debug] siteUrl:", siteUrl, "windowOrigin:", windowOrigin, "redirectTo:", redirectTo)
-  }
 
   const [step, setStep] = useState<Step>("email")
   const [email, setEmail] = useState("")
@@ -131,7 +125,7 @@ export default function AuthForm() {
         }
         const { error: otpErr } = await supabase.auth.signInWithOtp({
           email,
-          options: { emailRedirectTo: redirectTo, shouldCreateUser: true },
+          options: { emailRedirectTo: redirectWithNext, shouldCreateUser: true },
         })
         if (!otpErr) {
           setInfo(`Verification code sent to ${email}.`)
@@ -141,7 +135,7 @@ export default function AuthForm() {
         const { error: suErr } = await supabase.auth.signUp({
           email,
           password,
-          options: { emailRedirectTo: redirectTo },
+          options: { emailRedirectTo: redirectWithNext },
         })
         if (!suErr) {
           setInfo(`Confirmation email sent to ${email}. Please check your inbox and click "Confirm Email" to complete registration.`)
@@ -158,14 +152,14 @@ export default function AuthForm() {
       }
       const { error: otpErr2 } = await supabase.auth.signInWithOtp({
         email,
-        options: { emailRedirectTo: redirectTo, shouldCreateUser: true },
+        options: { emailRedirectTo: redirectWithNext, shouldCreateUser: true },
       })
       if (!otpErr2) {
         setInfo(`Verification code sent to ${email}.`)
         setStep("verify_code")
         return
       }
-      const { error: suErr2 } = await supabase.auth.signUp({ email, password, options: { emailRedirectTo: redirectTo } })
+      const { error: suErr2 } = await supabase.auth.signUp({ email, password, options: { emailRedirectTo: redirectWithNext } })
       if (!suErr2) {
         setInfo(`Confirmation email sent to ${email}. Please check your inbox and click "Confirm Email".`)
         return
@@ -205,7 +199,7 @@ export default function AuthForm() {
   async function handleResend() {
     resetMessages()
     startTransition(async () => {
-      const { error: otpErr } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: redirectTo, shouldCreateUser: true } })
+      const { error: otpErr } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: redirectWithNext, shouldCreateUser: true } })
       if (otpErr) setError(otpErr.message)
       else setInfo("Verification code resent to your email.")
     })
@@ -249,14 +243,7 @@ export default function AuthForm() {
 
   async function handleOAuth(provider: "google" | "facebook") {
     setError(''); setInfo('')
-    // HARDCODE the redirect URL directly to ensure it's correct
-    const hardcodedRedirectTo = "https://shopixo.net/auth/callback"
-    
-    // Debug log BEFORE the OAuth call
-    console.log("[OAuth Debug] About to call signInWithOAuth with redirectTo:", hardcodedRedirectTo)
-    alert("Debug: redirectTo = " + hardcodedRedirectTo)
-    
-    const options: { redirectTo: string; scopes?: string; queryParams?: Record<string, string> } = { redirectTo: hardcodedRedirectTo }
+    const options: { redirectTo: string; scopes?: string; queryParams?: Record<string, string> } = { redirectTo: redirectWithNext }
     if (provider === 'facebook') {
       options.scopes = 'email public_profile'
       options.queryParams = { auth_type: 'rerequest' }

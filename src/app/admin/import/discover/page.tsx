@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, type MouseEvent as ReactMouseEvent } from "react";
 import Link from "next/link";
 import type { Route } from "next";
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import { Package, Loader2, CheckCircle, Star, Trash2, Eye, X, Play, TrendingUp, ChevronLeft, ChevronRight, Image as ImageIcon, BarChart3, DollarSign, Grid3X3, FileText, Truck, Sparkles } from "lucide-react";
 import PreviewPageOne from "@/components/admin/import/preview/PreviewPageOne";
 import PreviewPageThree from "@/components/admin/import/preview/PreviewPageThree";
@@ -101,6 +102,7 @@ function extractDiscoverDescriptionImages(html: string): string[] {
 }
 
 export default function ProductDiscoveryPage() {
+  const supabase = useMemo(() => createClientComponentClient(), []);
   const [category, setCategory] = useState("all");
   const [selectedFeatures, setSelectedFeatures] = useState<string[]>([]);
   const [selectedFeaturesWithIds, setSelectedFeaturesWithIds] = useState<SelectedFeature[]>([]);
@@ -141,6 +143,24 @@ export default function ProductDiscoveryPage() {
   const TOTAL_PREVIEW_PAGES = 7;
 
   const quantityPresets = [2000, 1500, 1000, 500, 250, 100, 50, 25, 10];
+
+  const getAdminAuthHeaders = async (includeContentType: boolean = false): Promise<Record<string, string>> => {
+    const headers: Record<string, string> = includeContentType
+      ? { "Content-Type": "application/json" }
+      : {};
+
+    try {
+      const { data } = await supabase.auth.getSession();
+      const accessToken = data?.session?.access_token;
+      if (typeof accessToken === "string" && accessToken.trim().length > 0) {
+        headers.Authorization = `Bearer ${accessToken}`;
+      }
+    } catch {
+      // Ignore token-read failures and let server-side auth decide.
+    }
+
+    return headers;
+  };
   
 
   const testConnection = async () => {
@@ -260,6 +280,8 @@ export default function ProductDiscoveryPage() {
     let consecutiveEmptyBatches = 0; // Track stalls
     
     try {
+      const adminAuthHeaders = await getAdminAuthHeaders(true);
+
       // Use batch mode to avoid Vercel timeout (10s limit)
       // Each request processes 3 products max, then we accumulate results
       while (hasMore && allProducts.length < quantity) {
@@ -290,20 +312,21 @@ export default function ProductDiscoveryPage() {
         
         const res = await fetch(`/api/admin/cj/products/search-and-price?${params}`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: adminAuthHeaders,
           body: JSON.stringify({ seenPids }),
         });
         
         // Check content-type before parsing JSON to avoid parse errors on timeouts/errors
         const contentType = res.headers.get('content-type') || '';
         if (!contentType.includes('application/json')) {
-          const text = await res.text();
-          throw new Error(`Server error: ${text.slice(0, 100)}...`);
+          throw new Error(`Search failed: unexpected response type (${contentType || 'unknown'})`);
         }
-        
         const data = await res.json();
-        
+
         if (!res.ok || !data.ok) {
+          if (res.status === 401) {
+            throw new Error('Session expired. Please sign in again, then retry search and queue add.');
+          }
           if (data.quotaExhausted || res.status === 429) {
             lastError = "CJ Dropshipping API limit reached. Showing products found so far.";
             break;
@@ -520,9 +543,10 @@ export default function ProductDiscoveryPage() {
     setSaving(true);
     try {
       const selectedProducts = products.filter((p: PricedProduct) => selected.has(p.pid));
+      const adminAuthHeaders = await getAdminAuthHeaders(true);
       const res = await fetch("/api/admin/import/batch", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: adminAuthHeaders,
         body: JSON.stringify({
           name: batchName || `Discovery ${new Date().toLocaleDateString()}`,
           mediaMode: media,
@@ -684,6 +708,9 @@ export default function ProductDiscoveryPage() {
       });
       
       const data = await res.json();
+      if (res.status === 401) {
+        throw new Error('Session expired. Please sign in again, then retry adding products to checklist.');
+      }
       if (data.ok && data.batchId) {
         setSavedBatchId(data.batchId);
         const skippedNotices: string[] = [];

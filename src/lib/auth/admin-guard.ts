@@ -3,10 +3,36 @@ import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 
 export type AdminGuard = { ok: true; user: any } | { ok: false; reason: string };
 
-export async function ensureAdmin(): Promise<AdminGuard> {
+function extractBearerToken(req?: Request): string | null {
+  if (!req) return null;
+  const authHeader = req.headers.get('authorization') || req.headers.get('Authorization') || '';
+  if (!authHeader) return null;
+
+  const [scheme, token] = authHeader.split(' ');
+  if (!scheme || !token || scheme.toLowerCase() !== 'bearer') return null;
+
+  const trimmed = token.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export async function ensureAdmin(req?: Request): Promise<AdminGuard> {
   try {
     const supabaseAuth = createRouteHandlerClient({ cookies });
-    const { data: { user } } = await supabaseAuth.auth.getUser();
+    let user: any = null;
+
+    const { data: userFromCookie } = await supabaseAuth.auth.getUser();
+    if (userFromCookie?.user) {
+      user = userFromCookie.user;
+    } else {
+      const bearerToken = extractBearerToken(req);
+      if (bearerToken) {
+        const { data: userFromToken } = await supabaseAuth.auth.getUser(bearerToken);
+        if (userFromToken?.user) {
+          user = userFromToken.user;
+        }
+      }
+    }
+
     if (!user) return { ok: false, reason: 'Not authenticated' };
 
     const email = String(user.email || '').toLowerCase();
